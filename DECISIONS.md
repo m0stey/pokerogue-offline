@@ -19,3 +19,11 @@
 - Node 24.19.0 / npm 11.17.0 installed via winget on 2026-09-12. Path: C:\Program Files\nodejs
 - git 2.54, curl 8.19 present. No gh CLI, no Python.
 - Upstream clones (shallow, 2026-09-12) in upstream/: pokerogue (da1d0ef), rogueserver (c7fed19, 2026-08-18), Pokerogue-App (41e9835, 2026-09-07), admiral-pokerogue-fork (c16a3bbf, 2025-12-20).
+
+## 2026-09-12 — go-ahead
+
+- Architecture approved: always-local game build behind a local caching proxy (Option B in reports/00-verification-and-proposal.md). Contract in DESIGN.md.
+- Accepted: we build and host game.zip ourselves from pinned upstream tags; installer bundles the game (~600 MB).
+- Backup policy approved: Documents\PokeRogue Backups, keep all for 30 days, then one per month, conflict/update backups kept forever.
+- Same-origin API: game compiled with VITE_SERVER_URL=http://127.0.0.1:47830/api (client builds URLs as base + path, so a prefix works).
+- Open: which GitHub repo hosts the game releases and the installer (needed for the updater).
