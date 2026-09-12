@@ -1,0 +1,10 @@
+upstream/
+scratch/
+node_modules/
+dist/
+game-build/dist/
+game-build/work/
+*.zip
+*.log
+.DS_Store
+Thumbs.db

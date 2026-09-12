@@ -1,0 +1,26 @@
+{
+  "name": "pokerogue-offline",
+  "productName": "PokeRogue",
+  "version": "0.1.0",
+  "description": "PokeRogue that works on the plane and keeps your account in sync",
+  "private": true,
+  "license": "MIT",
+  "main": "dist/main/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "npm run build && electron .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "dist": "npm run build && electron-builder --win"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "electron": "44.3.0",
+    "electron-builder": "26.15.3",
+    "esbuild": "0.28.2",
+    "typescript": "7.0.2",
+    "vitest": "5.0.0"
+  }
+}
