@@ -1,0 +1,21 @@
+# Decisions log
+
+## 2026-09-12 — kickoff answers from project owner
+
+1. Architecture: a local game build with a sync layer is acceptable, but explore other options. Ease of use is top priority, second only to "never lose progress".
+2. Scope: session slots (runs in progress) must be accessible offline, update regularly, and be synced — not only the system save.
+3. Other devices: the user has so far only played in a plain browser on pokerogue.net (single-device assumption is likely but not guaranteed).
+4. Conflict policy: a one-time dialogue when both sides changed, plus a way to change the choice later in settings.
+5. Login: username/password (not OAuth), to be confirmed.
+6. Game updates: update regularly when online, but prompt before large downloads because the user sometimes plays over a mobile hotspot.
+7. Backups: owner asked for best practice on retention (count vs. time span) — to be proposed.
+8. Live API: go-ahead granted; use a freshly created throwaway account only.
+9. Project home: C:\dev\pokerogue-offline. Install all dependencies (target machine is Win11 with nothing preinstalled).
+10. Always verify facts against upstream before designing.
+11. Orchestration: multiple Opus agents, divided by step of the sequence.
+
+## Environment facts (this dev machine)
+- Windows 11 Home 10.0.26200, German locale, winget available.
+- Node 24.19.0 / npm 11.17.0 installed via winget on 2026-09-12. Path: C:\Program Files\nodejs
+- git 2.54, curl 8.19 present. No gh CLI, no Python.
+- Upstream clones (shallow, 2026-09-12) in upstream/: pokerogue (da1d0ef), rogueserver (c7fed19, 2026-08-18), Pokerogue-App (41e9835, 2026-09-07), admiral-pokerogue-fork (c16a3bbf, 2025-12-20).
