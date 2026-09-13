@@ -133,6 +133,30 @@ describe("checking", () => {
     expect(found).toHaveLength(1);
   });
 
+  it("a check started while another is running gets the same answer, not 'nothing found'", async () => {
+    let release_: (v: unknown) => void = () => undefined;
+    const gate = new Promise((r) => (release_ = r));
+    const found: AvailableUpdate[] = [];
+    const updater = new Updater({
+      userDataDir: tempDir(),
+      log: noopLogger,
+      connectivity: connectivity("online"),
+      installed: () => INSTALLED,
+      onUpdateAvailable: (u) => found.push(u),
+      fetchJson: async (url) => {
+        if (url.endsWith(RELEASE_INFO_ASSET)) return { gameTag: "v1.12.0.12", appVersion: "0.1.0" };
+        await gate;
+        return [release("r2")];
+      },
+    });
+    const first = updater.checkNow("came online");
+    const second = updater.checkNow("save needs a newer game");
+    release_(undefined);
+    expect((await first)?.releaseTag).toBe("r2");
+    expect((await second)?.releaseTag).toBe("r2");
+    expect(found).toHaveLength(1);
+  });
+
   it("survives a broken feed without announcing anything", async () => {
     const found: AvailableUpdate[] = [];
     const updater = new Updater({
