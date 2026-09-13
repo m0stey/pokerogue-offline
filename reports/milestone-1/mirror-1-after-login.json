@@ -1,0 +1,50 @@
+{
+  "takenAt": "2026-09-13T08:33:39.214Z",
+  "files": [
+    "account.json",
+    "state.json",
+    "system.json"
+  ],
+  "account": {
+    "username": "offsync_37b4e9",
+    "hasToken": true,
+    "tokenPrefix": "Wd3Lz1…",
+    "info": {
+      "username": "offsync_37b4e9",
+      "discordId": "",
+      "googleId": "",
+      "lastSessionSlot": -1,
+      "hasAdminRole": false
+    },
+    "lastLoginAt": "2026-09-13T08:28:46.496Z"
+  },
+  "state": {
+    "clientSessionId": "QrBguZOKDl5ugkk3WOMxJHYwb5O75wIC",
+    "lastSyncAt": null,
+    "lastSyncResult": null,
+    "gameVersionServed": null
+  },
+  "system": {
+    "dirty": false,
+    "baseFetchedAt": "2026-09-13T08:30:50.529Z",
+    "localWrittenAt": "2026-09-13T08:30:50.529Z",
+    "base": {
+      "playTime": 0,
+      "timestamp": 1789288249343,
+      "gameVersion": "1.12.0.11",
+      "trainerId": 57229,
+      "battles": 0,
+      "classicSessionsPlayed": 0
+    },
+    "local": {
+      "playTime": 0,
+      "timestamp": 1789288249343,
+      "gameVersion": "1.12.0.11",
+      "trainerId": 57229,
+      "battles": 0,
+      "classicSessionsPlayed": 0
+    },
+    "localPrev": null
+  },
+  "sessions": {}
+}

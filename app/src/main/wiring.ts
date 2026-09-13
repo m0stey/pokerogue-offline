@@ -21,7 +21,8 @@ export function loadRuntime(): RuntimeDeps {
   return {
     makeMirror: (dir) => new RealMirror(dir) as unknown as Mirror,
 
-    makeConnectivity: (log) => new RealConnectivity({ log }) as unknown as Connectivity,
+    makeConnectivity: (log, forceOfflineCheck) =>
+      new RealConnectivity({ log, forceOfflineCheck }) as unknown as Connectivity,
 
     startProxy: realStartProxy as unknown as StartProxy,
 

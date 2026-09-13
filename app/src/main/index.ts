@@ -51,6 +51,8 @@ import { Updater } from "./updater";
 import { createGameWindow, focusWindow } from "./window";
 
 const APP_FOLDER_NAME = "PokeRogue Offline";
+/** Development only: touch <userData>/force-offline to make the app behave as if there is no network. */
+const FORCE_OFFLINE_FILE = "force-offline";
 const SYNC_AFTER_ONLINE_MS = 3_000;
 const SYNC_EVERY_MS = 10 * 60_000;
 const QUIT_SYNC_LIMIT_MS = 30_000;
@@ -120,8 +122,11 @@ async function start(): Promise<void> {
   runtime = loadRuntime(log);
 
   // Connectivity first: the proxy needs it, and the updater asks it before any download.
+  // A packaged build never gets the switch, so there is no way for the user to end up stuck offline.
+  const forceOfflineCheck = app.isPackaged ? undefined : () => existsSync(join(userDataDir, FORCE_OFFLINE_FILE));
+  if (forceOfflineCheck) log.info("development build: the force-offline switch is available", { file: FORCE_OFFLINE_FILE });
   connectivity = runtime
-    ? runtime.makeConnectivity(log.child("connectivity"))
+    ? runtime.makeConnectivity(log.child("connectivity"), forceOfflineCheck)
     : new FallbackConnectivity(log.child("connectivity"));
 
   updater = new Updater({

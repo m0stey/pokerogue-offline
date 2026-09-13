@@ -377,6 +377,29 @@ describe("proxy: online passthrough and mirroring", () => {
     expect(h.mirror.readState().clientSessionId).toBe(installId);
   });
 
+  it("logs the path it actually forwarded, so the log shows the install-wide clientSessionId", async () => {
+    const h = await setup();
+    await login(h);
+    await httpRequest(h.proxy.url, "/api/savedata/system/get?clientSessionId=PAGE_LOAD_ID_1", {
+      headers: auth(h),
+    });
+    const installId = h.mirror.readState().clientSessionId;
+    const line = h.logs.filter((l) => l.msg.endsWith(":api")).at(-1);
+    expect(line?.data?.source).toBe("upstream");
+    expect(String(line?.data?.path)).toContain(`clientSessionId=${installId}`);
+    expect(String(line?.data?.path)).not.toContain("PAGE_LOAD_ID");
+  });
+
+  it("logs the game's own path when the answer came from the mirror", async () => {
+    const h = await setup({ offline: true });
+    await httpRequest(h.proxy.url, "/api/savedata/system/get?clientSessionId=PAGE_LOAD_ID_1", {
+      headers: auth(h),
+    });
+    const line = h.logs.filter((l) => l.msg.endsWith(":api")).at(-1);
+    expect(line?.data?.source).toBe("replay");
+    expect(String(line?.data?.path)).toContain("PAGE_LOAD_ID_1");
+  });
+
   it("rewrites the clientSessionId inside the updateall body, leaving the saves byte-identical", async () => {
     const h = await setup();
     await login(h);
