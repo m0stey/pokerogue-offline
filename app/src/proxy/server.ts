@@ -113,10 +113,13 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
       return;
     }
 
-    const finish = (status: number, source: Source): void => {
+    // The path is logged exactly as it left this process: for a forwarded /savedata/* call that is
+    // the path *after* the clientSessionId rewrite, so the log proves the install-wide id (and not
+    // the game's per-page-load one) is what the server saw (DESIGN §3.4, invariant §4.4).
+    const finish = (status: number, source: Source, loggedPath: string = rest): void => {
       log.info("api", {
         method,
-        path: redactPath(rest),
+        path: redactPath(loggedPath),
         status,
         source,
         ms: Date.now() - started,
@@ -143,7 +146,7 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
         }
         applySideEffects(apiPath, query, body, result, req.headers);
         sendUpstream(res, result);
-        finish(result.status, "upstream");
+        finish(result.status, "upstream", upstreamPath);
         return;
       }
       const reason = result.kind === "html" ? "upstream-html" : `upstream-${result.reason}`;

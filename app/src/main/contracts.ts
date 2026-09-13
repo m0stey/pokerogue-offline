@@ -180,7 +180,11 @@ export const UNKNOWN_REJECTION = "unknown-rejection";
 
 export interface RuntimeDeps {
   makeMirror(dir: string): Mirror;
-  makeConnectivity(log: Logger): Connectivity;
+  /**
+   * `forceOfflineCheck` is a dev-only switch (see index.ts); it is never passed in a packaged
+   * build and a Connectivity that ignores it still behaves exactly as DESIGN.md §3.5 says.
+   */
+  makeConnectivity(log: Logger, forceOfflineCheck?: () => boolean): Connectivity;
   startProxy: StartProxy;
   makeBackupManager(opts: { documentsDir: string; userDataDir: string; log: Logger }): BackupManager;
   makeUpstreamApi(opts: { token: string | null; log: Logger }): UpstreamApi;

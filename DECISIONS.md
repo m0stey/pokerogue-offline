@@ -32,3 +32,4 @@
 - Sync engine: on an `unknown-rejection` the engine should also export a fallback `.prsv` of the local save (cheap, and "fail safe" must include "nothing lost"). To be done in the QA phase; not yet implemented.
 - Session read-back verification compares only keys the server returned; dropped keys are warnings, critical keys (seed, waveIndex, timestamp, party, gameMode, playTime) are errors.
 - Finished-offline runs propagate via `session/delete` only under four preconditions (see DESIGN §3.8); `clear` is never sent.
+- UI language: German for every user-visible string (dialogs, settings page, tray, splash, installer). Plain everyday German, informal "du", no technical terms. Decided 2026-09-13.

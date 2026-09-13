@@ -16,6 +16,8 @@ export type ConnectivityState = "online" | "offline" | "unknown";
 export const PROBE_PATH = "/game/titlestats";
 export const ONLINE_PROBE_INTERVAL_MS = 5 * 60_000;
 export const OFFLINE_PROBE_INTERVAL_MS = 60_000;
+/** How often the dev-only force-offline hook is re-read (used to test DESIGN.md §5). */
+export const FORCE_OFFLINE_CHECK_INTERVAL_MS = 5_000;
 
 export interface ConnectivityOptions {
   log?: Logger;
@@ -24,6 +26,13 @@ export interface ConnectivityOptions {
   timeoutMs?: number;
   onlineIntervalMs?: number;
   offlineIntervalMs?: number;
+  /**
+   * Dev-only hook, never wired in a packaged build: while it returns true the state is forced to
+   * `offline` and no upstream probe is made. Re-read every `forceOfflineIntervalMs`, so the switch
+   * works in both directions without restarting the app.
+   */
+  forceOfflineCheck?: () => boolean;
+  forceOfflineIntervalMs?: number;
 }
 
 export interface ConnectivityChange {
@@ -43,6 +52,10 @@ export class Connectivity extends EventEmitter {
   private readonly timeoutMs: number;
   private readonly onlineIntervalMs: number;
   private readonly offlineIntervalMs: number;
+  private readonly forceOfflineCheck: (() => boolean) | null;
+  private readonly forceOfflineIntervalMs: number;
+  private forcedOffline = false;
+  private forceTimer: NodeJS.Timeout | null = null;
   private timer: NodeJS.Timeout | null = null;
   private inFlight: Promise<void> | null = null;
   private running = false;
@@ -54,14 +67,24 @@ export class Connectivity extends EventEmitter {
     this.timeoutMs = opts.timeoutMs ?? FORWARD_TIMEOUT_MS;
     this.onlineIntervalMs = opts.onlineIntervalMs ?? ONLINE_PROBE_INTERVAL_MS;
     this.offlineIntervalMs = opts.offlineIntervalMs ?? OFFLINE_PROBE_INTERVAL_MS;
+    this.forceOfflineCheck = opts.forceOfflineCheck ?? null;
+    this.forceOfflineIntervalMs = opts.forceOfflineIntervalMs ?? FORCE_OFFLINE_CHECK_INTERVAL_MS;
   }
 
   get isOnline(): boolean {
     return this.state === "online";
   }
 
+  /** True while the dev-only hook is holding us offline. */
+  get isForcedOffline(): boolean {
+    return this.forcedOffline;
+  }
+
   /** One probe. Never rejects. Concurrent calls share the in-flight probe. */
   probe(): Promise<void> {
+    if (this.readForceOffline()) {
+      return Promise.resolve();
+    }
     if (this.inFlight) {
       return this.inFlight;
     }
@@ -78,6 +101,10 @@ export class Connectivity extends EventEmitter {
       return;
     }
     this.running = true;
+    if (this.forceOfflineCheck) {
+      this.forceTimer = setInterval(() => this.tickForceOffline(), this.forceOfflineIntervalMs);
+      this.forceTimer.unref?.();
+    }
     void this.probe().then(() => this.schedule());
   }
 
@@ -88,6 +115,10 @@ export class Connectivity extends EventEmitter {
       clearTimeout(this.timer);
       this.timer = null;
     }
+    if (this.forceTimer) {
+      clearInterval(this.forceTimer);
+      this.forceTimer = null;
+    }
   }
 
   markOffline(reason: string): void {
@@ -96,6 +127,39 @@ export class Connectivity extends EventEmitter {
 
   markOnline(reason = "upstream-responded"): void {
     this.setState("online", reason);
+  }
+
+  /**
+   * Reads the dev-only hook and applies it. Returns true when the probe must be skipped.
+   * A throwing hook counts as "not forced": the switch can never break normal probing.
+   */
+  private readForceOffline(): boolean {
+    if (!this.forceOfflineCheck) {
+      return false;
+    }
+    let forced = false;
+    try {
+      forced = this.forceOfflineCheck() === true;
+    } catch {
+      forced = false;
+    }
+    if (forced !== this.forcedOffline) {
+      this.forcedOffline = forced;
+      this.log.info(forced ? "force-offline switch is on" : "force-offline switch is off");
+    }
+    if (forced) {
+      this.lastProbeAt = new Date().toISOString();
+      this.markOffline("forced-offline");
+    }
+    return forced;
+  }
+
+  /** The 5 s re-read: flips us offline when the switch appears, resumes probing when it goes. */
+  private tickForceOffline(): void {
+    const wasForced = this.forcedOffline;
+    if (!this.readForceOffline() && wasForced) {
+      void this.probe().then(() => this.schedule());
+    }
   }
 
   private async runProbe(): Promise<void> {
