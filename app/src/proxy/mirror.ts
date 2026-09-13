@@ -1,7 +1,7 @@
 // The local mirror store. Contract: DESIGN.md §3.3.
 //
 // Layout under <dir> (normally <userData>/mirror/):
-//   account.json      { username, token, info, lastLoginAt }
+//   account.json      { username, tokenEnc | token, info, lastLoginAt }
 //   system.json       { base, local, dirty, baseFetchedAt, localWrittenAt }
 //   session-<n>.json  same shape with SessionSave, n = 0..4
 //   state.json        { clientSessionId, lastSyncAt, lastSyncResult, gameVersionServed }
@@ -12,6 +12,10 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import type { Logger } from "../common/log";
+import { noopLogger } from "../common/log";
+import type { SecretCodec } from "../common/secret";
+import { plainSecret } from "../common/secret";
 import { SESSION_SLOTS } from "../sync/types";
 import type { AccountInfo, SaveSnapshot, SessionSave, SystemSave } from "../sync/types";
 
@@ -98,11 +102,24 @@ export function assertSlot(n: number): void {
   }
 }
 
+export interface MirrorOptions {
+  /**
+   * How the account token is protected on disk. The default stores it in the clear, which is what
+   * the mirror did before; src/main passes an Electron `safeStorage`-backed codec.
+   */
+  secret?: SecretCodec;
+  log?: Logger;
+}
+
 export class Mirror {
   readonly dir: string;
+  private readonly secret: SecretCodec;
+  private readonly log: Logger;
 
-  constructor(dir: string) {
+  constructor(dir: string, opts: MirrorOptions = {}) {
     this.dir = dir;
+    this.secret = opts.secret ?? plainSecret;
+    this.log = (opts.log ?? noopLogger).child("mirror");
     fs.mkdirSync(dir, { recursive: true });
   }
 
@@ -223,25 +240,72 @@ export class Mirror {
 
   // --------------------------------------------------------------- account
 
+  /**
+   * The token is stored as `tokenEnc` whenever the configured {@link SecretCodec} can protect it,
+   * and as a plain `token` otherwise. Both are read; a plain token found while protection *is*
+   * available is re-written protected straight away, so an install that predates this migrates the
+   * first time anything looks at the account.
+   */
   readAccount(): AccountRecord | null {
     const raw = this.readJson(this.accountFile());
     if (raw === null) {
       return null;
     }
-    if (!isPlainObject(raw) || typeof raw.username !== "string" || typeof raw.token !== "string") {
+    const hasToken =
+      isPlainObject(raw) && (typeof raw.token === "string" || typeof raw.tokenEnc === "string");
+    if (!isPlainObject(raw) || typeof raw.username !== "string" || !hasToken) {
       this.quarantine(this.accountFile());
       return null;
     }
-    return {
+
+    let token: string;
+    let needsMigration = false;
+    if (typeof raw.tokenEnc === "string" && raw.tokenEnc !== "") {
+      try {
+        token = this.secret.unprotect(raw.tokenEnc);
+      } catch (err) {
+        // Windows will not give the token back (a different user, or a reset credential store).
+        // There is nothing to salvage; put the file aside so the next login writes a clean one.
+        this.log.error("the stored sign-in could not be read back and was put aside", {
+          error: String(err),
+        });
+        this.quarantine(this.accountFile());
+        return null;
+      }
+    } else {
+      token = typeof raw.token === "string" ? raw.token : "";
+      needsMigration = this.secret.available && token !== "";
+    }
+
+    const record: AccountRecord = {
       username: raw.username,
-      token: raw.token,
+      token,
       info: isPlainObject(raw.info) ? (raw.info as AccountInfo) : null,
       lastLoginAt: typeof raw.lastLoginAt === "string" ? raw.lastLoginAt : null,
     };
+    if (needsMigration) {
+      try {
+        this.writeAccount(record);
+        this.log.info("the stored sign-in is now protected by Windows");
+      } catch (err) {
+        this.log.warn("could not protect the stored sign-in", { error: String(err) });
+      }
+    }
+    return record;
   }
 
   writeAccount(account: AccountRecord): void {
-    this.writeJson(this.accountFile(), account);
+    const stored: Record<string, unknown> = {
+      username: account.username,
+      info: account.info,
+      lastLoginAt: account.lastLoginAt,
+    };
+    if (this.secret.available && account.token !== "") {
+      stored.tokenEnc = this.secret.protect(account.token);
+    } else {
+      stored.token = account.token;
+    }
+    this.writeJson(this.accountFile(), stored);
   }
 
   // ----------------------------------------------------------------- state

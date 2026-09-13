@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="de">
   <head>
     <meta charset="utf-8" />
-    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'self'" />
-    <title>PokeRogue</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self'" />
+    <title>PokéRogue</title>
     <style>
       html, body {
         height: 100%;
@@ -34,8 +34,9 @@
   </head>
   <body>
     <div class="box">
-      <div>Saving your progress online…</div>
+      <div id="text"></div>
       <div class="dots"><span></span><span></span><span></span></div>
     </div>
+    <script src="splash.js"></script>
   </body>
 </html>

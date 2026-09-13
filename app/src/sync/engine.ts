@@ -20,7 +20,7 @@
 import type { Logger } from "../common/log";
 import { noopLogger } from "../common/log";
 import type { BackupManager, BackupReason } from "./backup";
-import { sessionEquals, systemEquals, verifySessionReadBack } from "./compare";
+import { sessionEchoMatches, sessionEquals, systemEquals, verifySessionReadBack } from "./compare";
 import type { ClassifiedError } from "./errors";
 import { describeForUser, isUnrecoverablePush } from "./errors";
 import type { MirrorPort, SessionRecord } from "./mirror-port";
@@ -112,7 +112,9 @@ class SyncAborted extends Error {
  * 1. `local` is `null` — the game removed the run here;
  * 2. `clearedAt` is recorded — it was an offline *clear*, not some other way of ending up empty;
  * 3. `base` is non-null — we know what the server had;
- * 4. `remote` structurally equals `base` — nobody has touched the slot online since.
+ * 4. `remote` structurally equals `base` — nobody has touched the slot online since. Compared with
+ *    {@link sessionEchoMatches}, because `base` is the save *we* sent and the server's copy of it
+ *    never carries the keys its Go struct does not know.
  *
  * The caller must still write a verified `.prsv` of `remote` before calling `deleteSession`.
  */
@@ -123,7 +125,7 @@ export function mayPropagateClear(rec: SessionRecord, remote: SessionSave | null
     rec.clearedAt.length > 0 &&
     rec.base !== null &&
     remote !== null &&
-    sessionEquals(remote, rec.base)
+    sessionEchoMatches(remote, rec.base)
   );
 }
 
@@ -558,10 +560,17 @@ export async function runSync(deps: SyncDeps): Promise<SyncResult> {
     if (reason.kind === "needs-game-update" || reason.kind === "version-too-low") {
       result.needsGameUpdate = true;
     }
-    if (isUnrecoverablePush(reason)) {
+    // `unknown-rejection` still means "do nothing, keep the save dirty, try again next time"
+    // (DESIGN §3.9), but "fail safe" has to include "nothing is lost": if the rejection turns out
+    // to be permanent, the user must already have an importable copy. The file uses `reason: "rejected"`
+    // so it is never pruned and is obvious in the backups folder.
+    // (DECISIONS.md 2026-09-13, NOTES-sync.md §7.1.)
+    const unrecoverable = isUnrecoverablePush(reason);
+    if (unrecoverable || reason.kind === "unknown-rejection") {
       let backupPath: string | null = null;
+      const backupReason: BackupReason = unrecoverable ? "conflict" : "rejected";
       try {
-        backupPath = await backup.backup(kind, slot, local, "conflict");
+        backupPath = await backup.backup(kind, slot, local, backupReason);
         log.warn("push refused; exported a backup the user can import by hand", { target, path: backupPath });
       } catch (err) {
         log.error("could not write the fallback backup", { target, err: String(err) });

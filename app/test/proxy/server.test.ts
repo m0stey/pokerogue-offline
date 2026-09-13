@@ -58,7 +58,7 @@ afterEach(async () => {
 });
 
 async function setup(
-  options: { mode?: FakeMode; upstreamTimeoutMs?: number; offline?: boolean } = {},
+  options: { mode?: FakeMode; upstreamTimeoutMs?: number; offline?: boolean; gameVersion?: string } = {},
 ): Promise<Harness> {
   const fake = await startFakeUpstream(options.mode ?? "normal");
   const workspace = tempDir();
@@ -66,6 +66,14 @@ async function setup(
   fs.mkdirSync(gameDir, { recursive: true });
   fs.writeFileSync(path.join(gameDir, "index.html"), "<!doctype html><title>PokeRogue</title>", "utf8");
   fs.writeFileSync(path.join(gameDir, "game.js"), "// game", "utf8");
+  if (options.gameVersion) {
+    // game-build emits this next to index.html; the proxy reads it itself.
+    fs.writeFileSync(
+      path.join(gameDir, "version.json"),
+      JSON.stringify({ tag: `v${options.gameVersion}`, gameVersion: options.gameVersion }),
+      "utf8",
+    );
+  }
 
   const mirror = new Mirror(path.join(workspace, "mirror"));
   const logs: LogLine[] = [];
@@ -646,10 +654,136 @@ describe("proxy: offline behaviour end to end", () => {
 
   it("503s the endpoints that have no offline answer", async () => {
     const h = await setup({ offline: true });
-    for (const p of ["/api/game/titlestats", "/api/daily/seed", "/api/savedata/session/newclear?slot=0&clientSessionId=x"]) {
+    for (const p of ["/api/game/titlestats", "/api/daily/seed", "/api/account/register"]) {
       const res = await httpRequest(h.proxy.url, p);
       expect(res.status, p).toBe(503);
       expect(res.body.trim(), p).toBe("offline");
     }
+  });
+
+  // B3: a 503 here made the client throw, wipe the game-over screen and reload the page.
+  it("answers newclear so a run can end, and never forwards or queues it", async () => {
+    const h = await setup({ offline: true });
+    const stored = makeSession({ waveIndex: 42 });
+    h.mirror.setSessionSynced(0, stored);
+
+    const res = await httpRequest(
+      h.proxy.url,
+      "/api/savedata/session/newclear?slot=0&isVictory=false&clientSessionId=PAGE_LOAD_ID",
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toContain("application/json");
+    expect(JSON.parse(res.body)).toBe(false);
+    expect(h.fake.requests).toHaveLength(0);
+    // Nothing recorded: there is no "pending newclear" to send later.
+    expect(h.mirror.readSession(0)).toMatchObject({ local: stored, base: stored, clearedAt: null });
+  });
+});
+
+// ------------------------------------------------------------------------------------------------
+// reports/milestone-1.md §3 — a save from a newer game than the build we serve.
+// ------------------------------------------------------------------------------------------------
+
+describe("the game-version block", () => {
+  function listen(h: Harness): { seen: { saveVersion: string; servedVersion: string }[] } {
+    const seen: { saveVersion: string; servedVersion: string }[] = [];
+    h.proxy.events.on("needs-game-update", (info) => seen.push(info));
+    return { seen };
+  }
+
+  it("records which game version is being served (milestone-1 B4)", async () => {
+    const h = await setup({ gameVersion: "1.12.0.11" });
+    expect(h.mirror.readState().gameVersionServed).toBe("1.12.0.11");
+  });
+
+  it("says nothing, and serves happily, when there is no version.json", async () => {
+    const h = await setup();
+    expect(h.mirror.readState().gameVersionServed).toBeNull();
+    await login(h);
+    const { seen } = listen(h);
+    h.fake.state.system = makeSystem({ gameVersion: "99.0.0" });
+    const res = await httpRequest(h.proxy.url, "/api/savedata/system/get?clientSessionId=x", { headers: auth(h) });
+    expect(res.status).toBe(200);
+    expect(seen).toEqual([]);
+  });
+
+  it("tells the shell when the save online was written by a newer game", async () => {
+    const h = await setup({ gameVersion: "1.12.0.11" });
+    await login(h);
+    const { seen } = listen(h);
+    h.fake.state.system = makeSystem({ gameVersion: "1.12.1.0" });
+
+    const res = await httpRequest(h.proxy.url, "/api/savedata/system/get?clientSessionId=x", { headers: auth(h) });
+    expect(res.status).toBe(200);
+    expect(seen).toEqual([{ saveVersion: "1.12.1.0", servedVersion: "1.12.0.11" }]);
+    // and the save is still handed to the game untouched — the block is the client's to show.
+    expect(JSON.parse(res.body).gameVersion).toBe("1.12.1.0");
+  });
+
+  it("says nothing when the save is the same version or older", async () => {
+    for (const version of ["1.12.0.11", "1.12.0.10", "1.11.9.9"]) {
+      const h = await setup({ gameVersion: "1.12.0.11" });
+      await login(h);
+      const { seen } = listen(h);
+      h.fake.state.system = makeSystem({ gameVersion: version });
+      await httpRequest(h.proxy.url, "/api/savedata/system/get?clientSessionId=x", { headers: auth(h) });
+      expect(seen, version).toEqual([]);
+      await h.close();
+      active = null;
+    }
+  });
+
+  it("notices it offline too, from the mirror's own copy", async () => {
+    const h = await setup({ offline: true, gameVersion: "1.12.0.11" });
+    const { seen } = listen(h);
+    h.mirror.setSystemSynced(makeSystem({ gameVersion: "1.13.0.0" }));
+
+    const res = await httpRequest(h.proxy.url, "/api/savedata/system/get?clientSessionId=x");
+    expect(res.status).toBe(200);
+    expect(seen).toEqual([{ saveVersion: "1.13.0.0", servedVersion: "1.12.0.11" }]);
+  });
+
+  it("says nothing when there is no save at all", async () => {
+    const h = await setup({ offline: true, gameVersion: "1.12.0.11" });
+    const { seen } = listen(h);
+    const res = await httpRequest(h.proxy.url, "/api/savedata/system/get?clientSessionId=x");
+    expect(res.status).toBe(404);
+    expect(seen).toEqual([]);
+  });
+});
+
+// ------------------------------------------------------------------------------------------------
+// DNS-rebinding guard: we bind 127.0.0.1, but that alone does not stop a page on the open internet
+// pointing its own hostname here and reading the answers as same-origin.
+// ------------------------------------------------------------------------------------------------
+
+describe("the Host header must be ours", () => {
+  it("answers our own two names", async () => {
+    const h = await setup({ offline: true });
+    for (const host of [`127.0.0.1:${h.proxy.port}`, `localhost:${h.proxy.port}`, `LOCALHOST:${h.proxy.port}`]) {
+      const res = await httpRequest(h.proxy.url, "/index.html", { headers: { Host: host } });
+      expect(res.status, host).toBe(200);
+    }
+  });
+
+  it("refuses any other name, on the game files and on the save endpoints alike", async () => {
+    const h = await setup({ offline: true });
+    h.mirror.setSystemSynced(makeSystem());
+    const foreign = [
+      `evil.example.com:${h.proxy.port}`,
+      `pokerogue.net:${h.proxy.port}`,
+      "127.0.0.1",
+      `127.0.0.1:${h.proxy.port + 1}`,
+      `127.0.0.1.nip.io:${h.proxy.port}`,
+      `[::1]:${h.proxy.port}`,
+    ];
+    for (const host of foreign) {
+      for (const p of ["/index.html", "/api/savedata/system/get?clientSessionId=x"]) {
+        const res = await httpRequest(h.proxy.url, p, { headers: { Host: host } });
+        expect(res.status, `${host} ${p}`).toBe(403);
+        expect(res.body, `${host} ${p}`).not.toContain("trainerId");
+      }
+    }
+    expect(h.fake.requests).toHaveLength(0);
   });
 });

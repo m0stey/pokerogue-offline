@@ -121,8 +121,22 @@ by `stop()`.
    same side effect as `delete` — because the server's handler deletes the slot unconditionally.
    Without that the finished run would sit in the mirror looking dirty and could be pushed back.
    This side effect is not in DESIGN's list; it is the only way to keep base/local truthful.
-9. **`session/newclear`, `account/register`, `daily/*`, `game/titlestats` → 503 `offline`**, per
-   DESIGN's catch-all. In an `app`-mode build the client never calls `newclear` (verify-client §9).
+9. **`session/newclear` answers `200` with the bare JSON `false`**; `account/register`, `daily/*`
+    and `game/titlestats` still get 503 `offline`, per the DESIGN catch-all. `newclear` had to come
+    out of that bucket: `reports/verify-client.md` §9 said an `app`-mode build never calls it, and
+    the milestone-1 run showed it does, at the end of **every** run. The client
+    (`session-savedata-api.ts:newclear`) throws on anything that is not a 2xx with a JSON body, and
+    `game-over-phase.ts:handleGameOver` catches that by clearing the phase queue, showing
+    `serverCommunicationFailed` and reloading the page two seconds later — i.e. the 503 tore down
+    the game-over screen at the exact moment the user is most attached to the result. The real server
+    returns `writeJSON` of a Go `bool` (`api/endpoints.go`, `newclear` → `savedata.NewClear`), so we
+    return the same thing. `false` is the honest value: the flag becomes
+    `doGameOver(!isDaily || !!success)`, so a classic run ignores it entirely, and for a daily run
+    we cannot know offline whether that seed was already completed and must not hand out a
+    first-clear reward twice. Nothing is recorded and nothing is forwarded or queued — `newclear`
+    only reads on the server, so there is nothing to replay later. The slot and `clientSessionId`
+    arguments are deliberately **not** validated: an error here costs the user the end of a run, and
+    there is no upside to reproducing the server argument checking for a read-only flag.
 10. **Static server: no SPA fallback** (DESIGN §3.4 static bullet, updated). The built `index.html`
     references its assets as relative `./assets/...` URLs, so serving it for an arbitrary path would
     make the page resolve every asset against the wrong base. `index.html` is served for `/` and
@@ -143,7 +157,25 @@ by `stop()`.
     response marks online; HTML or a transport error marks offline. This means the app works even if
     the first probe has not finished when the game makes its first call.
 13. **Request bodies over 64 MiB are refused with 413** rather than buffered indefinitely.
-14. **Offline responses are re-serialised JSON.** The mirror stores parsed objects, so an offline
+14. **The `Host` header must be ours.** The server binds `127.0.0.1`, and on top of that every
+    request whose `Host` is not `127.0.0.1:<port>` or `localhost:<port>` gets a plain 403 and is
+    never routed — the DNS-rebinding guard (`hostAllowed`, SECURITY.md). Binding to localhost
+    alone does not stop a page on the open internet pointing a hostname it owns at 127.0.0.1 and
+    reading our answers as same-origin.
+15. **The account token is encrypted at rest, without the proxy knowing about Electron.** The
+    `Mirror` takes `{ secret: SecretCodec }` (`src/common/secret.ts`), defaulting to the identity
+    codec; `src/main/secret.ts` passes one backed by Electron `safeStorage`. `account.json` then
+    holds `tokenEnc` (base64) instead of `token`. A plain `token` is still read, and re-written
+    protected on the first read once a codec is available. If the ciphertext cannot be decrypted
+    (another Windows user, a reset credential store) the file is quarantined and `readAccount()`
+    returns null, so the next login writes a clean one.
+16. **The proxy notices a save from a newer game.** On a successful `system/get` — forwarded or
+    replayed — the save's `gameVersion` is compared with `<gameDir>/version.json` → `gameVersion`
+    using the server-semantics `compareGameVersion` (`src/common/version.ts`). If the save is
+    newer, `needs-game-update` is emitted on `proxy.events` with both versions; the save itself is
+    still handed to the game untouched, because the block is the client's to show and hiding the
+    save would be worse. `state.json.gameVersionServed` is written at startup (milestone-1 B4).
+17. **Offline responses are re-serialised JSON.** The mirror stores parsed objects, so an offline
     `system/get` returns the same *values* but not necessarily the same bytes the game sent (key
     order, whitespace). Values survive exactly, including the big `caughtAttr` values the client
     sends as decimal strings. Online responses are byte-verbatim.

@@ -55,7 +55,7 @@ export interface SaveSnapshot { system: SystemSave | null; sessions: (SessionSav
 
 ### 3.3 `src/proxy/mirror.ts` — the local store
 Directory: `<userData>/mirror/`. Files, all pretty JSON written atomically (write temp + rename):
-- `account.json` `{ username, token, info: AccountInfo, lastLoginAt }`
+- `account.json` `{ username, tokenEnc | token, info: AccountInfo, lastLoginAt }` — `tokenEnc` is the token through the injected `SecretCodec` (§3.10); plain `token` only when there is no credential store
 - `system.json` `{ base: SystemSave|null, local: SystemSave|null, dirty: boolean, baseFetchedAt, localWrittenAt }`
 - `session-<n>.json` same shape with `SessionSave`, n = 0..4
 - `state.json` `{ clientSessionId: string, lastSyncAt, lastSyncResult, gameVersionServed }`
@@ -96,8 +96,10 @@ Behaviour:
   - session `get/update/delete` → local with the same statuses the server uses; `update` sets dirty. Serve `null` arrays as `[]` normalisation is NOT done here (game tolerates null); keep bytes as stored.
   - `POST /savedata/updateall` → both, 200.
   - `POST /savedata/session/clear` (run finished offline) → set the slot`s local to null (dirty), record `{ clearedAt, finalSave }` in the slot file, answer `{"success":true}` like the server. Never replayed to the server as `clear`.
+  - `GET /savedata/session/newclear` → 200 with the bare JSON boolean `false`, exactly what the server returns. The client **throws** on anything else and reloads the page two seconds later, which would destroy the end-of-run screen (reports/milestone-1.md §5, B3). Nothing is recorded, nothing is forwarded or queued.
   - `GET /game/titlestats`, `/daily/*`, anything else → 503 `offline` (game treats as unavailable).
 - Any upstream response whose `Content-Type` starts with `text/html`, or any network error / timeout (10 s), flips `Connectivity` to offline and the request is re-answered from the mirror as above. Never surface HTML to the game.
+- Binds `127.0.0.1` only, and refuses (403) any request whose `Host` header is not `127.0.0.1:<port>` or `localhost:<port>` — the DNS-rebinding guard (SECURITY.md).
 - Status codes: never treat an empty body as success; branch on status.
 - `clientSessionId` rewrite: the game generates a new id per page load. The proxy replaces it (query param, and the body field for `updateall`) with the install-wide id from `state.json`, so the game and the sync engine never kick each other out of the active session. The game`s own id is never forwarded.
 - Each `writeLocal*` keeps the previous local value as `localPrev` in the same file (one-step undo for a bad write). No `.prsv` per gameplay save; that is the game saving normally.
@@ -114,13 +116,13 @@ export type SlotDecision = { kind: 'noop' } | { kind: 'push' } | { kind: 'pull' 
 export function reconcileSystem(base: SystemSave|null, local: SystemSave|null, remote: SystemSave|null): SlotDecision;
 export function reconcileSession(base: SessionSave|null, local: SessionSave|null, remote: SessionSave|null): SlotDecision;
 ```
-Rules: structural equality after normalising `null`↔`[]` and key order. `remote == base && local != base` ⇒ push. `local == base && remote != base` ⇒ pull. Both differ ⇒ conflict, unless one is a strict descendant of the other by (`playTime` ≥, `timestamp` ≥, and for sessions same `seed` with `waveIndex` ≥) in which case fast-forward to the descendant. Everything else conflict. Never guess.
+Rules: structural equality after normalising `null`↔`[]` and key order. **Any comparison involving the server's copy of a *session*** (local-vs-remote, base-vs-remote) uses `sessionEchoMatches`, which compares only the keys the server actually returned — the server drops every key its Go struct does not know, so a strict comparison reported "the server changed it" after every push we made ourselves (reports/milestone-1.md §5, B2). `remote == base && local != base` ⇒ push. `local == base && remote != base` ⇒ pull. Both differ ⇒ conflict, unless one is a strict descendant of the other by (`playTime` ≥, `timestamp` ≥, and for sessions same `seed` with `waveIndex` ≥) in which case fast-forward to the descendant. Everything else conflict. Never guess.
 
 ### 3.7 `src/sync/backup.ts`
 ```ts
 export interface BackupManager { backup(kind: 'system'|'session', slot: number|null, save: object, reason: string): Promise<string /*path*/>; prune(): Promise<void>; }
 ```
-Writes `.prsv` (system: key-shortened exactly like the client's export; session: like the client's session export) to `Documents\PokeRogue Backups\<yyyy-mm-dd>\<HHmmss>-<reason>-<kind><slot>.prsv` and a copy under `<userData>/backups/`. After writing, re-read, decrypt, parse, and structurally compare — only then return. Retention: keep everything ≤ 30 days; older: keep the last file per calendar month; `reason` in {`conflict`, `update`} is never pruned.
+Writes `.prsv` (system: key-shortened exactly like the client's export; session: like the client's session export) to `Documents\PokeRogue Backups\<yyyy-mm-dd>\<HHmmss>-<reason>-<kind><slot>.prsv` and a copy under `<userData>/backups/`. After writing, re-read, decrypt, parse, and structurally compare — only then return. Retention: keep everything ≤ 30 days; older: keep the last file per calendar month; `reason` in {`conflict`, `update`, `rejected`} is never pruned.
 
 ### 3.8 `src/sync/engine.ts`
 ```ts
@@ -130,15 +132,18 @@ export async function runSync(deps: { mirror; backup; api: UpstreamApi; policy: 
 Sequence: (1) if nothing dirty and base fresh (< 5 min), noop. (2) `system/get` with the mirror's `clientSessionId` → remote system. (3) decide system. (4) for each slot: `session/get` → decide. (5) apply: for every push or pull, `backup()` the side being replaced first; push system before sessions; immediately before each session push, re-`get` and re-compare that slot. (6) after each push, GET back and structurally compare (system: strict; session: after null/[] normalisation, ignoring server-dropped fields listed in `KNOWN_LOSSY_SESSION_FIELDS`). (7) update base/local/dirty. Conflicts go to the policy: `ask` (dialog once, remembers answer), `prefer-this-computer`, `prefer-online`. Never call `clear`, `newclear`, or `verify` from the engine. `session/delete` is allowed only to propagate a run the game finished offline, and only when all hold: local slot is null with a recorded `clearedAt`, base is non-null, remote structurally equals base, and a verified `.prsv` backup of remote was written first.
 
 ### 3.9 `src/sync/errors.ts`
-Map server error substrings to typed reasons: `not active`, `existing playtime is greater`, `stored trainer or secret ID does not match`, `save version below minimum game version`, `existing version is greater`, `existing wave index is greater`, `slot id .* out of range`, `failed to validate token`, `missing token`. Unknown ⇒ `unknown-rejection` (fail safe: do nothing, keep dirty). `existing version is greater` ⇒ emit `needs-game-update`.
+Map server error substrings to typed reasons: `not active`, `existing playtime is greater`, `stored trainer or secret ID does not match`, `save version below minimum game version`, `existing version is greater`, `existing wave index is greater`, `slot id .* out of range`, `failed to validate token`, `missing token`. Unknown ⇒ `unknown-rejection` (fail safe: do nothing, keep dirty — but export a `.prsv` of the local save with `reason: "rejected"` and report it in `SyncResult.unrecoverable`, so a rejection that turns out to be permanent has still cost the user nothing). `existing version is greater` ⇒ emit `needs-game-update`.
 
 ### 3.10 `src/main/`
 - Single `BrowserWindow`, loads `GAME_ORIGIN`, no menu, fullscreen-capable, remembers size.
-- On start: ensure game files present (`<userData>/game/<version>/`), start proxy, probe connectivity, open window; run sync 3 s after online is detected and every 10 min while online, and on window close (await, max 30 s, with a small "Saving online…" splash if > 2 s).
+- On start: ensure game files present (`<userData>/game/current` -> `<resourcesPath>/game` -> the dev folder), start proxy, probe connectivity, open window; run sync 3 s after online is detected and every 10 min while online, and on window close (await, max 30 s, with a small "saving online" splash if > 2 s).
 - Login: the game's own login screen (first run only; offline replay keeps the user logged in).
-- Dialogs (plain German/English text to be decided; default English): conflict dialog, metered-download prompt, "backup exported" notice on unrecoverable rejection. Text must not contain technical terms.
-- Settings page (`src/ui/settings.html`, opened via a small gear button overlay or tray): conflict preference, backups folder link, game version, "Last saved online: …", Play Time as reported by the mirror.
-- Updater: check our GitHub release feed; metered check via PowerShell `Get-NetConnectionProfile | Select NetworkCategory, IsConnectedToInternet` plus `(Get-NetConnectionProfile).NetworkCost` where available; download to `<userData>/game/staging/`, verify SHA-256 from the release, unzip, swap on next start, keep previous version until the new one has served one successful session.
+- **Every user-visible string is German**, informal "du", no technical terms, and they all live in `src/main/strings.de.ts` (DECISIONS 2026-09-13). The installer is German too (`electron-builder.yml`: `installerLanguages: de_DE`, `language: 1031`).
+- Dialogs: the conflict question; the "your progress is safe" notice on an unrecoverable rejection; **one** "there is a new version, ask <owner>" notice, shown at most once per app start and triggered by any of the three things that mean the same thing — the proxy seeing a system save newer than the served build, `SyncResult.needsGameUpdate`, or the release feed having a newer `game-<tag>`.
+- Settings page (`src/ui/settings.html`, opened from the tray): conflict preference (three options), backups folder + "Ordner öffnen", game version, "Zuletzt online gespeichert", "Spielzeit". Nothing else.
+- **Game-version block** (reports/milestone-1.md §3): the client refuses to load a system save whose `gameVersion` is greater than its own build (`game-data.ts:437`). The proxy compares every successful `GET /savedata/system/get` — forwarded *or* replayed — against `<gameDir>/version.json` -> `gameVersion` using the server-semantics `compareGameVersion` (`src/common/version.ts`), emits `needs-game-update` with both versions, and writes `state.json.gameVersionServed`.
+- **Updater: a notice only.** It checks the GitHub releases of `m0stey/pokerogue-offline` at most once every 6 h while online and, if a `game-<tag>` newer than the served tag exists, shows the dialog above. It downloads nothing, unpacks nothing and swaps nothing; a new game version arrives as a new installer. (Scope trim, DECISIONS 2026-09-13; the downloading updater, the metered-connection detection and prompt, and the staging/previous folders were deleted.)
+- **The account token is encrypted at rest** with Electron `safeStorage` (`account.json`.`tokenEnc`, base64). `src/proxy` stays Electron-free: the `Mirror` takes an injectable `secret: SecretCodec` (`src/common/secret.ts`) whose default is the identity, and `src/main` supplies the `safeStorage` one. No credential store => plain `token` plus a warning in the log; an existing plain token is migrated on the first read. See SECURITY.md.
 
 ## 4. Invariants (tested)
 

@@ -107,6 +107,8 @@ export function replay(req: ReplayRequest, mirror: Mirror, log: Logger = noopLog
         return sessionDelete(req, mirror);
       case "/savedata/session/clear":
         return sessionClear(req, mirror);
+      case "/savedata/session/newclear":
+        return sessionNewClear();
       case "/savedata/updateall":
         return updateAll(req, mirror);
       default:
@@ -320,6 +322,33 @@ function sessionClear(req: ReplayRequest, mirror: Mirror): ReplayResponse {
   mirror.clearLocalSession(pre.slot, submitted);
   const finished = sessionCompleted(submitted ?? record.local);
   return jsonResponse(200, { success: finished, error: "" });
+}
+
+/**
+ * `GET /savedata/session/newclear` — "is this the first time this seed has been cleared?"
+ *
+ * This one is not optional and it is not harmless (reports/milestone-1.md §5, B3). The client calls
+ * it at the *end of every run*, and `session-savedata-api.ts:newclear` **throws** on anything that
+ * is not a 2xx with a JSON body. `game-over-phase.ts:handleGameOver` catches that by clearing the
+ * phase queue, showing "serverCommunicationFailed" and **reloading the page two seconds later** —
+ * i.e. answering the 503 we used to answer tore down the game-over screen at the exact moment the user
+ * is most attached to the result.
+ *
+ * So we answer what the real server answers: `writeJSON` of a bare Go `bool`
+ * (upstream/rogueserver/api/endpoints.go `case "newclear"` → `savedata.NewClear`), 200.
+ *
+ * `false` is the honest value. The flag becomes `doGameOver(!isDaily || !!success)`: for a classic
+ * run it is ignored entirely, and for a daily run — which needs the online `/daily/*` endpoints to
+ * start at all — we genuinely cannot know offline whether that seed was already completed, and
+ * claiming a first clear would hand out a reward twice.
+ *
+ * Nothing is recorded and nothing is forwarded or queued: `newclear` only ever *reads* on the
+ * server, so there is nothing to replay later, and the sync engine never calls it (Invariant §4.7).
+ * Deliberately tolerant about slot and clientSessionId — an error here costs the user the end of a run,
+ * and there is no upside to reproducing the server's argument checking for a read-only flag.
+ */
+function sessionNewClear(): ReplayResponse {
+  return jsonResponse(200, false);
 }
 
 /** api/savedata/common.go `validateSessionCompleted`: classic wave 200, daily wave 50. */

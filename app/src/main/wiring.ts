@@ -19,7 +19,7 @@ import type { BackupManager, Connectivity, Mirror, RunSync, RuntimeDeps, StartPr
 
 export function loadRuntime(): RuntimeDeps {
   return {
-    makeMirror: (dir) => new RealMirror(dir) as unknown as Mirror,
+    makeMirror: (dir, opts) => new RealMirror(dir, opts) as unknown as Mirror,
 
     makeConnectivity: (log, forceOfflineCheck) =>
       new RealConnectivity({ log, forceOfflineCheck }) as unknown as Connectivity,

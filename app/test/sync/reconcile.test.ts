@@ -6,7 +6,7 @@ import {
   reconcileSystemExplained,
 } from "../../src/sync/reconcile";
 import type { SessionSave, SystemSave } from "../../src/sync/types";
-import { advanceSession, advanceSystem, makeSession, makeSystem, serverEcho } from "./fakes";
+import { SERVER_SESSION_KEYS, advanceSession, advanceSystem, makeSession, makeSystem, serverEcho } from "./fakes";
 
 // Three distinct system saves. A is the "base" state, B and C are divergent successors that are
 // NOT descendants of each other (different trainerId keeps them from fast-forwarding).
@@ -147,6 +147,33 @@ describe("reconcileSession — fast-forward and the seed rule", () => {
       kind: "noop",
       reason: "already-equal",
     });
+  });
+
+  // B2, reports/milestone-1.md §5: the field the server drops need not be one we know about.
+  it("ignores a field the server's struct has never heard of", () => {
+    const sent = makeSession({ playerFaints: 3, someFutureClientField: { a: 1 } });
+    const remote = serverEcho(sent, SERVER_SESSION_KEYS);
+    expect(reconcileSessionExplained(sent, sent, remote)).toEqual({
+      kind: "noop",
+      reason: "already-equal",
+    });
+  });
+
+  it("does not mistake a server echo for a remote change when the local save moved on", () => {
+    const sent = makeSession({ someFutureClientField: 1 });
+    const remote = serverEcho(sent, SERVER_SESSION_KEYS);
+    const local = advanceSession(sent, 2);
+    // base = what we sent, remote = its echo ⇒ the server did not move: push, never conflict.
+    expect(reconcileSessionExplained(sent, local, remote)).toEqual({
+      kind: "push",
+      reason: "local-changed",
+    });
+  });
+
+  it("the tolerance is one-way: a real difference in a kept field is still a difference", () => {
+    const local = makeSession({ waveIndex: 5 });
+    const remote = makeSession({ waveIndex: 12 });
+    expect(reconcileSessionExplained(local, local, remote).kind).toBe("pull");
   });
 });
 

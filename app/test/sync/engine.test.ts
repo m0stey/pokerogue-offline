@@ -10,10 +10,12 @@ import {
   FakeUpstreamApi,
   NOW_ISO,
   NOW_MS,
+  SERVER_SESSION_KEYS,
   advanceSession,
   advanceSystem,
   makeSession,
   makeSystem,
+  serverEcho,
 } from "./fakes";
 
 /** An empty SyncResult, for exercising `summarise` directly. */
@@ -447,7 +449,7 @@ describe("rejections the server will never accept", () => {
     expect(r.log).not.toContain("mirror.setBaseSystem");
   });
 
-  it("an unknown rejection changes nothing at all (fail safe)", async () => {
+  it("an unknown rejection changes nothing at all (fail safe) but exports a fallback copy", async () => {
     const local = advanceSystem(BASE_SYSTEM);
     const r = rig({ mirror: { system: { base: BASE_SYSTEM, local } }, api: { system: BASE_SYSTEM } });
     r.api.onUpdateSystem = () => ({
@@ -458,8 +460,42 @@ describe("rejections the server will never accept", () => {
     });
     const res = await runSync(r.deps);
     expect(res.errors).toEqual(["system:unknown-rejection"]);
-    expect(r.backup.written.filter((b) => b.reason === "conflict")).toHaveLength(0);
+    // Nothing was changed on either side and the save stays dirty, so the next sync tries again…
+    expect(r.log).not.toContain("mirror.setBaseSystem");
     expect(r.mirror.readSystem().dirty).toBe(true);
+    // …but the user now has an importable copy, under the never-pruned `rejected` reason.
+    expect(r.backup.written.filter((b) => b.reason === "conflict")).toHaveLength(0);
+    const rejected = r.backup.written.filter((b) => b.reason === "rejected");
+    expect(rejected).toHaveLength(1);
+    expect(rejected[0]).toMatchObject({ kind: "system", slot: null });
+    expect(rejected[0]!.save).toEqual(local);
+    expect(res.unrecoverable).toEqual([
+      {
+        what: "system",
+        reason: { kind: "unknown-rejection", detail: "brand new error", status: 400 },
+        backupPath: rejected[0]!.path,
+      },
+    ]);
+  });
+
+  it("reports an unknown rejection of a session slot the same way", async () => {
+    const local = advanceSession(BASE_SESSION);
+    const r = rig({
+      mirror: { sessions: [{ base: BASE_SESSION, local }] },
+      api: { sessions: [BASE_SESSION] },
+    });
+    r.api.onUpdateSession = () => ({
+      ok: false,
+      status: 400,
+      reason: { kind: "unknown-rejection", detail: "brand new error", status: 400 },
+      raw: "",
+    });
+    const res = await runSync(r.deps);
+    expect(res.errors).toEqual(["session0:unknown-rejection"]);
+    expect(res.unrecoverable).toHaveLength(1);
+    expect(res.unrecoverable[0]).toMatchObject({ what: "session0", backupPath: expect.any(String) });
+    expect(r.backup.written.some((b) => b.kind === "session" && b.slot === 0 && b.reason === "rejected")).toBe(true);
+    expect(r.mirror.readSession(0).dirty).toBe(true);
   });
 
   it("reports when even the fallback backup cannot be written", async () => {
@@ -878,5 +914,85 @@ describe("Invariant §4.7 — the engine never touches the destructive endpoints
       expect(call).toMatch(/^api\.(getSystem|updateSystem|getSession\d|updateSession\d|accountInfo)$/);
     }
     expect(r.log.join(" ")).not.toMatch(/clear|newclear|verify|delete(?!LocalSession)/);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------
+// B2 (reports/milestone-1.md §5): the server's echo of what we sent is not a change it made.
+// ---------------------------------------------------------------------------------------------
+
+describe("the server's lossy echo of our own save is not a remote change (B2)", () => {
+  /** A save with a field the server's Go struct has never heard of — the general case of B2. */
+  const SENT = makeSession({ playerFaints: 2, someFutureClientField: { a: 1, b: [2, 3] } });
+
+  it("base = what we sent, remote = the server's echo, local = base ⇒ noop and no backup", async () => {
+    const r = rig({
+      // The proxy stores the bytes the game sent as `base` and as `local` (setSessionSynced).
+      mirror: { sessions: [{ base: SENT, local: SENT, baseFetchedAt: NOW_ISO }] },
+      api: { sessions: [SENT] }, // the fake echoes it back through SERVER_SESSION_KEYS
+    });
+    const res = await runSync(r.deps);
+
+    expect(res.pulled).toEqual([]);
+    expect(res.pushed).toEqual([]);
+    expect(res.conflicts).toEqual([]);
+    expect(res.errors).toEqual([]);
+    // Nothing was written anywhere — no never-pruned `.prsv` every ten minutes.
+    expect(r.backup.written).toEqual([]);
+    expect(r.log.filter((c) => c.startsWith("mirror.write") || c.startsWith("mirror.setBase"))).toEqual([]);
+    // The mirror still holds the game's own bytes, not the server's degraded copy.
+    expect(r.mirror.readSession(0).local).toEqual(SENT);
+  });
+
+  it("the literal B2 case: the echo differs only by the dropped playerFaints", async () => {
+    const sent = makeSession({ playerFaints: 7 });
+    const echo = serverEcho(sent) as SessionSave; // drops playerFaints, nothing else
+    const r = rig({
+      mirror: { sessions: [{ base: sent, local: sent }] },
+      api: { sessions: [] },
+    });
+    r.api.onGetSession = (slot) => (slot === 0 ? { ok: true, status: 200, data: echo } : null);
+    const res = await runSync(r.deps);
+
+    expect(res.pulled).toEqual([]);
+    expect(r.backup.written).toEqual([]);
+  });
+
+  it("still notices a run that really moved on online", async () => {
+    const r = rig({
+      mirror: { sessions: [{ base: SENT, local: SENT }] },
+      api: { sessions: [advanceSession(SENT, 3)] },
+    });
+    const res = await runSync(r.deps);
+    expect(res.pulled).toEqual(["session0"]);
+    // and the local copy is exported before it is replaced (Invariant §4.1).
+    expect(r.backup.written).toHaveLength(1);
+    order(r.log, "backup.session0.update", "mirror.writeLocalSession0");
+  });
+
+  it("a remote that has lost a critical field is not treated as an echo", async () => {
+    const r = rig({ mirror: { sessions: [{ base: SENT, local: SENT }] }, api: { sessions: [] } });
+    const mutilated = { ...serverEcho(SENT, SERVER_SESSION_KEYS) } as Record<string, unknown>;
+    delete mutilated["party"];
+    r.api.onGetSession = (slot) =>
+      slot === 0 ? { ok: true, status: 200, data: mutilated as unknown as SessionSave } : null;
+    const res = await runSync(r.deps);
+    expect(res.pulled.concat(res.conflicts, res.pushed)).not.toEqual([]);
+  });
+
+  it("the system save was never affected: the server's added nulls already compare equal", async () => {
+    const r = rig({
+      mirror: { system: { base: BASE_SYSTEM, local: BASE_SYSTEM } },
+      api: { system: BASE_SYSTEM },
+    });
+    r.api.onGetSystem = () => ({
+      ok: true,
+      status: 200,
+      data: { ...BASE_SYSTEM, starterMoveData: null, starterEggMoveData: null } as SystemSave,
+    });
+    const res = await runSync(r.deps);
+    expect(res.pulled).toEqual([]);
+    expect(res.pushed).toEqual([]);
+    expect(r.backup.written).toEqual([]);
   });
 });

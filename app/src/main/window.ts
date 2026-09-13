@@ -5,6 +5,8 @@ import { BrowserWindow, app, screen, shell } from "electron";
 import { join } from "node:path";
 import type { Logger } from "../common/log";
 import { GAME_ORIGIN } from "./contracts";
+import { devToolsAllowed } from "./dev-hooks";
+import { DE } from "./strings.de";
 import { readJsonSafe, writeJsonAtomic } from "./settings";
 
 interface WindowState {
@@ -77,7 +79,7 @@ export function createGameWindow(opts: GameWindowOptions): BrowserWindow {
     minHeight: 480,
     show: false,
     backgroundColor: "#1b1b1f",
-    title: "PokeRogue",
+    title: DE.titles.game,
     autoHideMenuBar: true,
     icon: join(__dirname, "..", "ui", "assets", "tray.png"),
     webPreferences: {
@@ -132,7 +134,7 @@ export function createGameWindow(opts: GameWindowOptions): BrowserWindow {
     } else if (input.key === "Escape" && win.isFullScreen()) {
       event.preventDefault();
       win.setFullScreen(false);
-    } else if (!app.isPackaged && input.key === "F12") {
+    } else if (input.key === "F12" && devToolsAllowed(app.isPackaged)) {
       event.preventDefault();
       win.webContents.toggleDevTools();
     }

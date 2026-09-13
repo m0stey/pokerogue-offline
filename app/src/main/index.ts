@@ -4,13 +4,12 @@
 //   1. one instance only (a second launch just brings the first window forward)
 //   2. userData -> %APPDATA%\PokeRogue Offline, so logs and saves are never next to the exe
 //   3. file logger (nothing above this point can be logged to a file)
-//   4. put a downloaded game update in place - must happen before anything opens those files
-//   5. find the game files
-//   6. start the local game server on 47830 (see PORT handling below)
-//   7. ask whether we are online, open the window, and only then start saving online
+//   4. find the game files
+//   5. start the local game server on 47830 (see PORT handling below)
+//   6. ask whether we are online, open the window, and only then start saving online
 //
 // Nothing in here ever asks the user a question they did not cause, except the one conflict
-// question and the mobile-connection question.
+// question. Everything the user reads is in strings.de.ts.
 
 import { BrowserWindow, app, net, powerMonitor } from "electron";
 import { createRequire } from "node:module";
@@ -19,8 +18,6 @@ import { join } from "node:path";
 import type { Logger } from "../common/log";
 import {
   GAME_PORT,
-  NEEDS_GAME_UPDATE,
-  UNKNOWN_REJECTION,
   type ConflictAnswer,
   type ConflictQuestion,
   type Connectivity,
@@ -31,12 +28,12 @@ import {
 } from "./contracts";
 import {
   askConflict,
-  askMeteredDownload,
   hideSavingSplash,
   installDialogs,
   openBackupsFolder,
   openSettings,
   showBackupSavedNotice,
+  showNeedsGameUpdateNotice,
   showSavingSplash,
   showStartupError,
   type SettingsPageData,
@@ -44,15 +41,16 @@ import {
 import { FallbackConnectivity, startFallbackServer } from "./fallback-server";
 import { ensureGameFiles, type GameLocation } from "./game-files";
 import { formatPlayTime, formatRelative } from "./format";
+import { forceOfflineCheck as makeForceOfflineCheck, FORCE_OFFLINE_FILE } from "./dev-hooks";
 import { createFileLogger } from "./logger";
+import { createSecretCodec } from "./secret";
 import { SettingsStore, readJsonSafe } from "./settings";
+import { DE } from "./strings.de";
 import { createTray, destroyTray } from "./tray";
 import { Updater } from "./updater";
 import { createGameWindow, focusWindow } from "./window";
 
 const APP_FOLDER_NAME = "PokeRogue Offline";
-/** Development only: touch <userData>/force-offline to make the app behave as if there is no network. */
-const FORCE_OFFLINE_FILE = "force-offline";
 const SYNC_AFTER_ONLINE_MS = 3_000;
 const SYNC_EVERY_MS = 10 * 60_000;
 const QUIT_SYNC_LIMIT_MS = 30_000;
@@ -76,6 +74,8 @@ let syncKickoff: NodeJS.Timeout | null = null;
 let syncInFlight: Promise<SyncResult | null> | null = null;
 let quitting = false;
 let backupNoticeShown = false;
+/** The "there is a new version" message is shown at most once per app start, wherever it comes from. */
+let gameUpdateNoticeShown = false;
 let lastOnline = false;
 
 // -----------------------------------------------------------------------------
@@ -94,7 +94,9 @@ if (!app.requestSingleInstanceLock()) {
   app.whenReady().then(
     () => void start(),
     (err: unknown) => {
-      showStartupError(String(err));
+      // Too early for the file logger; the console is all there is, and the user must not read it.
+      console.error("PokeRogue could not start:", err);
+      showStartupError(DE.startup.generic);
       app.exit(1);
     },
   );
@@ -121,9 +123,9 @@ async function start(): Promise<void> {
 
   runtime = loadRuntime(log);
 
-  // Connectivity first: the proxy needs it, and the updater asks it before any download.
+  // Connectivity first: the proxy needs it, and the update check asks it before looking anywhere.
   // A packaged build never gets the switch, so there is no way for the user to end up stuck offline.
-  const forceOfflineCheck = app.isPackaged ? undefined : () => existsSync(join(userDataDir, FORCE_OFFLINE_FILE));
+  const forceOfflineCheck = makeForceOfflineCheck({ isPackaged: app.isPackaged, userDataDir });
   if (forceOfflineCheck) log.info("development build: the force-offline switch is available", { file: FORCE_OFFLINE_FILE });
   connectivity = runtime
     ? runtime.makeConnectivity(log.child("connectivity"), forceOfflineCheck)
@@ -132,28 +134,28 @@ async function start(): Promise<void> {
   updater = new Updater({
     userDataDir,
     log: log.child("updater"),
-    settings,
     connectivity,
     installedTag: () => gameLocation?.tag ?? null,
-    askMetered: (sizeText) => askMeteredDownload(sizeText, gameWindow),
+    onNewerVersion: () => showGameUpdateNotice("a newer game version has been published"),
   });
-
-  // A finished download is swapped in here, while nothing has the files open yet.
-  updater.applyPendingUpdate();
 
   gameLocation = ensureGameFiles(
     { userDataDir, resourcesPath: process.resourcesPath, isPackaged: app.isPackaged },
     log.child("game-files"),
   );
   if (!gameLocation && app.isPackaged) {
-    showStartupError(
-      "The game files are missing. Please install PokeRogue again - your saved progress will not be affected.",
-    );
+    showStartupError(DE.startup.missingFiles);
     app.exit(1);
     return;
   }
 
-  if (runtime) mirror = runtime.makeMirror(join(userDataDir, "mirror"));
+  if (runtime) {
+    mirror = runtime.makeMirror(join(userDataDir, "mirror"), {
+      // The account token is protected by Windows itself where that is possible (SECURITY.md).
+      secret: createSecretCodec(log.child("secret")),
+      log: log.child("mirror"),
+    });
+  }
 
   if (!(await startGameServer(userDataDir))) return;
 
@@ -176,7 +178,6 @@ async function start(): Promise<void> {
     },
   });
 
-  updater.cleanupPreviousVersion();
   updater.start();
 
   // Waking from sleep on a plane, or landing: look at the network again straight away.
@@ -212,6 +213,12 @@ async function startGameServer(userDataDir: string): Promise<boolean> {
         port: GAME_PORT,
         connectivity,
         log: log.child("proxy"),
+        gameVersion: gameLocation.gameVersion,
+      });
+      // The save online was written by a newer game than this build, so the game itself will
+      // refuse to open the account (reports/milestone-1.md §3). Say so, once.
+      proxy.events?.on("needs-game-update", (info) => {
+        showGameUpdateNotice("the save was made with a newer game", info);
       });
     } else {
       proxy = await startFallbackServer({
@@ -227,12 +234,10 @@ async function startGameServer(userDataDir: string): Promise<boolean> {
     if (code === "EADDRINUSE") {
       // We hold the single-instance lock, so this is not another copy of PokeRogue.
       log.error("port 47830 is already taken by another program");
-      showStartupError(
-        "Another program on this computer is already using something PokeRogue needs. Please restart the computer and start PokeRogue again.",
-      );
+      showStartupError(DE.startup.portInUse);
     } else {
       log.error("the game could not be started", { error: String(err) });
-      showStartupError("Something went wrong while starting the game. Please restart the computer and try again.");
+      showStartupError(DE.startup.generic);
     }
     app.exit(1);
     return false;
@@ -312,16 +317,28 @@ async function runSyncNow(reason: string): Promise<SyncResult | null> {
 }
 
 function afterSync(result: SyncResult): void {
-  if (result.errors.some((e) => e.includes(NEEDS_GAME_UPDATE))) {
-    void updater?.checkNow("the game needs to be newer");
+  // The engine says so outright now; nothing here matches on error strings any more.
+  if (result.needsGameUpdate) {
+    showGameUpdateNotice("the online service says the game is out of date");
   }
-  // Something the server refused for a reason we do not understand: the progress was written to a
-  // backup file instead, and the user is told once per session where it is.
-  const unrecoverable = result.errors.some((e) => e.includes(UNKNOWN_REJECTION));
-  if (unrecoverable && !backupNoticeShown) {
+  // Something the online service refused: the progress was written to a file on this computer
+  // instead, and the user is told once per session that it is there.
+  if ((result.unrecoverable?.length ?? 0) > 0 && !backupNoticeShown) {
     backupNoticeShown = true;
     void showBackupSavedNotice(gameWindow);
   }
+}
+
+/**
+ * The one message about needing a newer version, from whichever of the three places noticed it:
+ * the proxy seeing a save from a newer game, the sync engine being refused, or the release feed
+ * having something newer. Shown at most once per app start — the user can only do one thing about it.
+ */
+function showGameUpdateNotice(reason: string, detail?: Record<string, unknown>): void {
+  if (gameUpdateNoticeShown) return;
+  gameUpdateNoticeShown = true;
+  log.warn("telling the user the game needs to be updated", { reason, ...detail });
+  void showNeedsGameUpdateNotice(gameWindow);
 }
 
 async function onConflict(question: ConflictQuestion): Promise<ConflictAnswer> {
@@ -365,7 +382,6 @@ async function finishAndExit(): Promise<void> {
     hideSavingSplash();
   }
   try {
-    updater?.noteSessionCompleted();
     updater?.stop();
     destroyTray();
     await Promise.race([proxy?.close() ?? Promise.resolve(), new Promise((r) => setTimeout(r, 2_000))]);
@@ -411,11 +427,11 @@ function settingsPageData(userDataDir: string): SettingsPageData {
   const peek = peekMirror(userDataDir);
   return {
     conflictPolicy: s.conflictPolicy,
-    allowMeteredDownloads: s.allowMeteredDownloads,
     backupsDir: s.backupsDir,
-    gameVersion: gameLocation?.tag ?? "unknown",
-    lastSavedOnline: peek.lastSyncAt ? formatRelative(peek.lastSyncAt) : "not yet",
+    gameVersion: gameLocation?.tag ?? DE.settings.unknown,
+    lastSavedOnline: peek.lastSyncAt ? formatRelative(peek.lastSyncAt) : DE.settings.notYet,
     playTime: formatPlayTime(peek.playTimeSeconds),
+    text: DE.settings,
   };
 }
 

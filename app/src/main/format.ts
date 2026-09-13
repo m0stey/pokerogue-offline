@@ -1,40 +1,37 @@
 // Turning numbers into the sentences the user actually reads. Deliberately no jargon, no seconds,
-// no ISO timestamps anywhere the user can see them.
+// no ISO timestamps anywhere the user can see them. The words themselves live in strings.de.ts.
 
-/** Seconds of play time -> "12 h 34 m" (the game's own label for this number is "Play Time"). */
+import { DE } from "./strings.de";
+
+/**
+ * Seconds of play time -> "12 Std. 34 Min.".
+ * The game's own German label for this number is "Spielzeit"
+ * (game-build/dist/game/locales/de/game-stats-ui-handler.json), so that is the label we use.
+ */
 export function formatPlayTime(seconds: number | null | undefined): string {
-  if (typeof seconds !== "number" || !isFinite(seconds) || seconds < 0) return "—";
+  if (typeof seconds !== "number" || !isFinite(seconds) || seconds < 0) return DE.format.nothing;
   const total = Math.floor(seconds);
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
-  if (h === 0 && m === 0) return "less than a minute";
-  if (h === 0) return `${m} m`;
-  return `${h} h ${m} m`;
+  if (h === 0 && m === 0) return DE.format.lessThanAMinute;
+  if (h === 0) return DE.format.minutes(m);
+  return DE.format.hoursMinutes(h, m);
 }
 
-/** A timestamp -> "just now", "5 minutes ago", "yesterday", "on 3 March". */
+/** A timestamp -> "gerade eben", "vor 5 Minuten", "gestern", "am 3. März". */
 export function formatRelative(when: number | string | null | undefined, now = Date.now()): string {
   const ms = typeof when === "string" ? Date.parse(when) : when;
-  if (typeof ms !== "number" || !isFinite(ms) || ms <= 0) return "never";
+  if (typeof ms !== "number" || !isFinite(ms) || ms <= 0) return DE.format.never;
   const diff = Math.max(0, now - ms);
   const min = Math.round(diff / 60000);
-  if (min < 1) return "just now";
-  if (min === 1) return "a minute ago";
-  if (min < 60) return `${min} minutes ago`;
+  if (min < 1) return DE.format.justNow;
+  if (min === 1) return DE.format.aMinuteAgo;
+  if (min < 60) return DE.format.minutesAgo(min);
   const hours = Math.round(min / 60);
-  if (hours === 1) return "an hour ago";
-  if (hours < 24) return `${hours} hours ago`;
+  if (hours === 1) return DE.format.anHourAgo;
+  if (hours < 24) return DE.format.hoursAgo(hours);
   const days = Math.round(hours / 24);
-  if (days === 1) return "yesterday";
-  if (days < 7) return `${days} days ago`;
-  return `on ${new Date(ms).toLocaleDateString(undefined, { day: "numeric", month: "long" })}`;
-}
-
-/** Bytes -> "about 500 MB" (rounded the way a person would say it). */
-export function formatSize(bytes: number | null | undefined): string {
-  if (typeof bytes !== "number" || !isFinite(bytes) || bytes <= 0) return "a few hundred MB";
-  const mb = bytes / (1024 * 1024);
-  if (mb < 1) return "less than 1 MB";
-  if (mb < 1024) return `about ${Math.round(mb / 10) * 10 || Math.round(mb)} MB`;
-  return `about ${(mb / 1024).toFixed(1)} GB`;
+  if (days === 1) return DE.format.yesterday;
+  if (days < 7) return DE.format.daysAgo(days);
+  return DE.format.onDate(new Date(ms).toLocaleDateString("de-DE", { day: "numeric", month: "long" }));
 }

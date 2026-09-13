@@ -5,7 +5,11 @@
 // changes (`gameStats` comes back alphabetised), empty arrays come back as `null`, and a couple of
 // legacy fields are added as `null`. All of that is semantically identical data.
 
+import { compareGameVersion } from "../common/version";
 import type { SessionSave, SystemSave } from "./types";
+
+// Re-exported: it used to live here, and both the reconciler and the proxy need the same rule.
+export { compareGameVersion };
 
 /**
  * Fields the server silently drops from a session save, confirmed live
@@ -224,46 +228,6 @@ function num(v: unknown): number | null {
   return typeof v === "number" && Number.isFinite(v) ? v : null;
 }
 
-/**
- * Compare two `x.y.z`-style version strings the way the server does
- * (upstream/rogueserver/api/savedata/utils.go): split on `.`, 3 or 4 numeric components, trailing
- * zeros trimmed, compared component-wise. Returns -1/0/1, or `null` if either is unparseable.
- */
-export function compareGameVersion(a: string, b: string): number | null {
-  const parse = (s: string): number[] | null => {
-    if (typeof s !== "string") {
-      return null;
-    }
-    const parts = s.split(".");
-    if (parts.length < 3 || parts.length > 4) {
-      return null;
-    }
-    const nums: number[] = [];
-    for (const p of parts) {
-      if (!/^\d+$/.test(p)) {
-        return null;
-      }
-      nums.push(Number(p));
-    }
-    while (nums.length > 0 && nums[nums.length - 1] === 0) {
-      nums.pop();
-    }
-    return nums;
-  };
-  const x = parse(a);
-  const y = parse(b);
-  if (!x || !y) {
-    return null;
-  }
-  for (let i = 0; i < Math.max(x.length, y.length); i++) {
-    const xi = x[i] ?? 0;
-    const yi = y[i] ?? 0;
-    if (xi !== yi) {
-      return xi > yi ? 1 : -1;
-    }
-  }
-  return 0;
-}
 
 /**
  * Is `a` a strict descendant of `b` — i.e. can `a` safely replace `b` without losing anything?
@@ -360,6 +324,44 @@ export function isDescendantSession(a: SessionSave | null, b: SessionSave | null
   const bp = num(b["playTime"]);
   if (ap !== null && bp !== null && ap < bp) {
     return false;
+  }
+  return true;
+}
+
+/**
+ * Is `remote` nothing more than the server's own (lossy) echo of the save `ours`?
+ *
+ * The server decodes a session into a fixed Go struct and silently drops every key that struct does
+ * not have — `playerFaints` today, whatever a future client release adds tomorrow. So after we push
+ * a save, the copy the server hands back is *never* byte-identical to what we sent, and a strict
+ * comparison of `base` (what we sent) against `remote` (the echo) reports "the server changed" on
+ * every single sync. That produced the pull loop in reports/milestone-1.md §5 (B2): the mirror's
+ * copy of the run was replaced by the server's degraded copy every ten minutes, each time writing a
+ * never-pruned `.prsv`.
+ *
+ * The honest comparison is the one {@link verifySessionReadBack} already trusts after a push:
+ * compare **only the top-level keys the server's copy actually contains**, after the usual
+ * `null`/`[]`/absent normalisation. A key the server simply does not store is not a change it made.
+ * Dropping a {@link CRITICAL_SESSION_FIELDS} key is still a real difference — a remote without
+ * `party` or `waveIndex` is not an echo of anything.
+ *
+ * Asymmetric on purpose: the first argument must be the server's copy.
+ */
+export function sessionEchoMatches(remote: SessionSave | null, ours: SessionSave | null): boolean {
+  if (remote === null || ours === null) {
+    return remote === null && ours === null;
+  }
+  const remoteRec = remote as Record<string, unknown>;
+  const ourRec = ours as Record<string, unknown>;
+  for (const key of Object.keys(remoteRec)) {
+    if (firstDifference(remoteRec[key], ourRec[key]) !== null) {
+      return false;
+    }
+  }
+  for (const key of CRITICAL_SESSION_FIELDS) {
+    if (key in ourRec && !isEmptyish(ourRec[key]) && !(key in remoteRec)) {
+      return false;
+    }
   }
   return true;
 }
