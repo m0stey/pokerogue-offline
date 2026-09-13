@@ -1,0 +1,463 @@
+// The proxy HTTP server. Contract: DESIGN.md §3.4.
+//
+//   /api/*  -> upstream when connectivity says online (with mirroring side effects on success),
+//              or answered from the mirror when offline. HTML or a transport error from upstream
+//              flips connectivity to offline and the same request is re-answered from the mirror.
+//   /*      -> the static game build.
+//
+// Branching is on HTTP status only; an empty body is never treated as success (DESIGN §4.3).
+
+import * as http from "node:http";
+import * as net from "node:net";
+import { URLSearchParams } from "node:url";
+import type { Logger } from "../common/log";
+import { noopLogger } from "../common/log";
+import type { SessionSave, SystemSave } from "../sync/types";
+import { SESSION_SLOTS } from "../sync/types";
+import type { Connectivity } from "./connectivity";
+import type { AccountRecord, Mirror } from "./mirror";
+import { emptyResponse, replay, textResponse } from "./replay";
+import type { ReplayResponse } from "./replay";
+import { createStaticHandler } from "./static";
+import { forward } from "./upstream";
+import type { UpstreamResult } from "./upstream";
+
+export const API_PREFIX = "/api";
+export const DEFAULT_PORT = 47830;
+export const DEFAULT_HOST = "127.0.0.1";
+/** Refuse absurd bodies rather than buffering forever; real system saves are well under this. */
+export const MAX_BODY_BYTES = 64 * 1024 * 1024;
+
+export interface ProxyOptions {
+  gameDir: string;
+  mirror: Mirror;
+  port?: number;
+  host?: string;
+  connectivity: Connectivity;
+  log?: Logger;
+  /** Injectable for tests; defaults to UPSTREAM_API. */
+  upstreamBaseUrl?: string;
+  upstreamTimeoutMs?: number;
+}
+
+export interface ProxyHandle {
+  close(): Promise<void>;
+  readonly port: number;
+  readonly url: string;
+}
+
+type Source = "upstream" | "replay";
+
+export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
+  const log = (opts.log ?? noopLogger).child("proxy");
+  const { mirror, connectivity } = opts;
+  const port = opts.port ?? DEFAULT_PORT;
+  const host = opts.host ?? DEFAULT_HOST;
+  const serveStatic = createStaticHandler({ dir: opts.gameDir, log });
+
+  // DESIGN §3.4 / §4.4: one clientSessionId per install. The game invents a new one on every page
+  // load; if that reached the server it would fight the sync engine for the active session, so
+  // every forwarded /savedata/* request carries the install-wide id instead.
+  let installClientSessionId: string | null = null;
+  const installId = (): string => {
+    if (installClientSessionId === null) {
+      installClientSessionId = mirror.ensureClientSessionId();
+    }
+    return installClientSessionId;
+  };
+
+  const server = http.createServer((req, res) => {
+    const url = req.url ?? "/";
+    if (isApiRequest(url)) {
+      void handleApi(req, res, url).catch((err: unknown) => {
+        log.error("api handler crashed", { error: String(err) });
+        sendReplay(res, textResponse(503, "offline"));
+      });
+      return;
+    }
+    void serveStatic(req, res).catch((err: unknown) => {
+      log.error("static handler crashed", { error: String(err) });
+      if (!res.headersSent) {
+        res.statusCode = 500;
+      }
+      res.end();
+    });
+  });
+
+  const sockets = new Set<net.Socket>();
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
+
+  async function handleApi(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    url: string,
+  ): Promise<void> {
+    const started = Date.now();
+    const rest = url.slice(API_PREFIX.length) || "/";
+    const queryIndex = rest.indexOf("?");
+    const apiPath = queryIndex === -1 ? rest : rest.slice(0, queryIndex);
+    const search = queryIndex === -1 ? "" : rest.slice(queryIndex + 1);
+    const query = new URLSearchParams(search);
+    const method = (req.method ?? "GET").toUpperCase();
+
+    let body: Buffer;
+    try {
+      body = await readBody(req);
+    } catch (err) {
+      const response = textResponse(413, String(err));
+      sendReplay(res, response);
+      log.warn("api request body rejected", { method, path: redactPath(rest), error: String(err) });
+      return;
+    }
+
+    const finish = (status: number, source: Source): void => {
+      log.info("api", {
+        method,
+        path: redactPath(rest),
+        status,
+        source,
+        ms: Date.now() - started,
+      });
+    };
+
+    if (connectivity.state !== "offline") {
+      let upstreamPath = rest;
+      let upstreamBody = body;
+      if (apiPath.startsWith("/savedata/")) {
+        const id = installId();
+        upstreamPath = withInstallClientSessionId(rest, id);
+        if (apiPath.replace(/\/+$/, "") === "/savedata/updateall") {
+          upstreamBody = withInstallClientSessionIdInBody(body, id);
+        }
+      }
+      const result = await forward({ method, path: upstreamPath, headers: req.headers }, upstreamBody, {
+        baseUrl: opts.upstreamBaseUrl,
+        timeoutMs: opts.upstreamTimeoutMs,
+      });
+      if (result.kind === "ok") {
+        if (connectivity.state !== "online") {
+          connectivity.markOnline("upstream-responded");
+        }
+        applySideEffects(apiPath, query, body, result, req.headers);
+        sendUpstream(res, result);
+        finish(result.status, "upstream");
+        return;
+      }
+      const reason = result.kind === "html" ? "upstream-html" : `upstream-${result.reason}`;
+      log.warn("upstream unavailable, answering from mirror", {
+        method,
+        path: redactPath(rest),
+        reason,
+      });
+      connectivity.markOffline(reason);
+    }
+
+    const response = replay({ method, path: apiPath, query, headers: req.headers, body }, mirror, log);
+    sendReplay(res, response);
+    finish(response.status, "replay");
+  }
+
+  /** DESIGN §3.4: side effects on success only, branching on status codes. */
+  function applySideEffects(
+    apiPath: string,
+    query: URLSearchParams,
+    requestBody: Buffer,
+    result: { status: number; body: Buffer },
+    headers: http.IncomingHttpHeaders,
+  ): void {
+    try {
+      switch (apiPath.replace(/\/+$/, "") || "/") {
+        case "/account/login": {
+          if (result.status !== 200) {
+            return;
+          }
+          const token = (parseJson(result.body) as { token?: unknown } | null)?.token;
+          if (typeof token !== "string" || token === "") {
+            return;
+          }
+          const username = new URLSearchParams(requestBody.toString("utf8")).get("username") ?? "";
+          const previous = mirror.readAccount();
+          const record: AccountRecord = {
+            username,
+            token,
+            info: previous && previous.username === username ? previous.info : null,
+            lastLoginAt: new Date().toISOString(),
+          };
+          mirror.writeAccount(record);
+          return;
+        }
+        case "/account/info": {
+          if (result.status !== 200) {
+            return;
+          }
+          const info = parseJson(result.body) as Record<string, unknown> | null;
+          if (!info || typeof info.username !== "string") {
+            return;
+          }
+          const previous = mirror.readAccount();
+          mirror.writeAccount({
+            username: info.username,
+            token: previous?.token ?? headerValue(headers, "authorization") ?? "",
+            info: info as AccountRecord["info"],
+            lastLoginAt: previous?.lastLoginAt ?? null,
+          });
+          return;
+        }
+        case "/savedata/system/get": {
+          if (result.status !== 200) {
+            return;
+          }
+          const save = parseJson(result.body) as SystemSave | null;
+          if (save) {
+            mirror.setSystemSynced(save);
+          }
+          return;
+        }
+        case "/savedata/system/update": {
+          if (result.status !== 204) {
+            return;
+          }
+          const save = parseJson(requestBody) as SystemSave | null;
+          if (save) {
+            mirror.setSystemSynced(save);
+          }
+          return;
+        }
+        case "/savedata/session/get": {
+          if (result.status !== 200) {
+            return;
+          }
+          const slot = slotFromQuery(query);
+          const save = parseJson(result.body) as SessionSave | null;
+          if (slot !== null && save) {
+            mirror.setSessionSynced(slot, save);
+          }
+          return;
+        }
+        case "/savedata/session/update": {
+          if (result.status !== 200) {
+            return;
+          }
+          const slot = slotFromQuery(query);
+          const save = parseJson(requestBody) as SessionSave | null;
+          if (slot !== null && save) {
+            mirror.setSessionSynced(slot, save);
+          }
+          return;
+        }
+        case "/savedata/session/delete":
+        case "/savedata/session/clear": {
+          // `clear` always deletes the slot server-side on a 200 (api/savedata/clear.go), so the
+          // mirror must follow or a finished run would look dirty and be pushed back.
+          if (result.status !== 200) {
+            return;
+          }
+          const slot = slotFromQuery(query);
+          if (slot !== null) {
+            mirror.setSessionSynced(slot, null);
+          }
+          return;
+        }
+        case "/savedata/updateall": {
+          if (result.status !== 200) {
+            return;
+          }
+          const payload = parseJson(requestBody) as {
+            system?: SystemSave;
+            session?: SessionSave;
+            sessionSlotId?: number;
+          } | null;
+          if (!payload) {
+            return;
+          }
+          if (payload.system) {
+            mirror.setSystemSynced(payload.system);
+          }
+          const slot = payload.sessionSlotId;
+          if (
+            payload.session &&
+            typeof slot === "number" &&
+            Number.isInteger(slot) &&
+            slot >= 0 &&
+            slot < SESSION_SLOTS
+          ) {
+            mirror.setSessionSynced(slot, payload.session);
+          }
+          return;
+        }
+        default:
+          return;
+      }
+    } catch (err) {
+      // A mirror problem must never break the game's request.
+      log.error("mirror side effect failed", { path: apiPath, error: String(err) });
+    }
+  }
+
+  await new Promise<void>((resolve, reject) => {
+    const onError = (err: Error): void => reject(err);
+    server.once("error", onError);
+    server.listen(port, host, () => {
+      server.off("error", onError);
+      resolve();
+    });
+  });
+
+  const address = server.address();
+  const actualPort = typeof address === "object" && address ? address.port : port;
+  log.info("proxy listening", { url: `http://${host}:${actualPort}`, gameDir: opts.gameDir });
+
+  return {
+    port: actualPort,
+    url: `http://${host}:${actualPort}`,
+    close(): Promise<void> {
+      return new Promise<void>((resolve) => {
+        server.close(() => resolve());
+        for (const socket of sockets) {
+          socket.destroy();
+        }
+        sockets.clear();
+      });
+    },
+  };
+}
+
+function isApiRequest(url: string): boolean {
+  return (
+    url === API_PREFIX ||
+    url.startsWith(`${API_PREFIX}/`) ||
+    url.startsWith(`${API_PREFIX}?`)
+  );
+}
+
+function sendUpstream(res: http.ServerResponse, result: UpstreamResult): void {
+  if (result.kind === "error") {
+    sendReplay(res, emptyResponse(503));
+    return;
+  }
+  res.statusCode = result.status;
+  const contentType = result.headers["content-type"];
+  if (contentType) {
+    res.setHeader("Content-Type", contentType);
+  }
+  res.setHeader("Content-Length", String(result.body.length));
+  res.setHeader("Cache-Control", "no-store");
+  res.end(result.body);
+}
+
+function sendReplay(res: http.ServerResponse, response: ReplayResponse): void {
+  if (res.headersSent) {
+    res.end();
+    return;
+  }
+  res.statusCode = response.status;
+  for (const [key, value] of Object.entries(response.headers)) {
+    res.setHeader(key, value);
+  }
+  res.setHeader("Content-Length", String(response.body.length));
+  res.setHeader("Cache-Control", "no-store");
+  if (response.body.length === 0) {
+    res.end();
+    return;
+  }
+  res.end(response.body);
+}
+
+function readBody(req: http.IncomingMessage): Promise<Buffer> {
+  return new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > MAX_BODY_BYTES) {
+        req.destroy();
+        reject(new Error("request body too large"));
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", (err) => reject(err));
+  });
+}
+
+function parseJson(body: Buffer): unknown {
+  const text = body.toString("utf8").trim();
+  if (text === "") {
+    return null;
+  }
+  try {
+    const value: unknown = JSON.parse(text);
+    return typeof value === "object" && value !== null && !Array.isArray(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function slotFromQuery(query: URLSearchParams): number | null {
+  const raw = query.get("slot");
+  if (raw === null || !/^\d+$/.test(raw)) {
+    return null;
+  }
+  const slot = Number.parseInt(raw, 10);
+  return slot >= 0 && slot < SESSION_SLOTS ? slot : null;
+}
+
+function headerValue(headers: http.IncomingHttpHeaders, name: string): string | undefined {
+  const value = headers[name];
+  return Array.isArray(value) ? value.join(", ") : value;
+}
+
+/**
+ * Replace the game's per-page-load `clientSessionId` query parameter with the install-wide id.
+ * Only rewrites when the parameter is actually present, so request semantics never change.
+ */
+export function withInstallClientSessionId(pathWithQuery: string, id: string): string {
+  const index = pathWithQuery.indexOf("?");
+  if (index === -1) {
+    return pathWithQuery;
+  }
+  const params = new URLSearchParams(pathWithQuery.slice(index + 1));
+  if (!params.has("clientSessionId")) {
+    return pathWithQuery;
+  }
+  params.set("clientSessionId", id);
+  return `${pathWithQuery.slice(0, index)}?${params.toString()}`;
+}
+
+/**
+ * The same rewrite for `updateall`, whose `clientSessionId` travels in the JSON body (confirmed in
+ * the client's `UpdateAllSavedataRequest`, `src/@types/api.ts`, and `savedata-api.ts:updateAll`,
+ * which posts the body with no query string at all). Done as a textual substitution so the save
+ * itself is forwarded byte-for-byte.
+ */
+export function withInstallClientSessionIdInBody(body: Buffer, id: string): Buffer {
+  if (body.length === 0) {
+    return body;
+  }
+  const text = body.toString("utf8");
+  const field = /"clientSessionId"\s*:\s*"(?:[^"\\]|\\.)*"/;
+  if (!field.test(text)) {
+    return body;
+  }
+  return Buffer.from(text.replace(field, `"clientSessionId":${JSON.stringify(id)}`), "utf8");
+}
+
+/** Query strings carry no secrets today, but never log anything token-shaped. */
+export function redactPath(pathWithQuery: string): string {
+  const index = pathWithQuery.indexOf("?");
+  if (index === -1) {
+    return pathWithQuery;
+  }
+  const params = new URLSearchParams(pathWithQuery.slice(index + 1));
+  for (const key of [...params.keys()]) {
+    if (/token|password|auth/i.test(key)) {
+      params.set(key, "…");
+    }
+  }
+  const query = params.toString();
+  return query === "" ? pathWithQuery.slice(0, index) : `${pathWithQuery.slice(0, index)}?${query}`;
+}

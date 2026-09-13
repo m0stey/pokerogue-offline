@@ -1,0 +1,46 @@
+# Installer configuration (electron-builder 26).
+#
+# Shape of the shipped app:
+#   PokeRogue-Setup-<version>.exe  ->  one click, per user, no questions, desktop + start menu icon
+#   resources/game/                ->  the game build, copied in from ../game-build/dist/game
+#   %APPDATA%\PokeRogue Offline\   ->  saves, backups, logs, updates (never touched by the installer)
+#
+# `signAndEditExecutable: false` keeps electron-builder from downloading winCodeSign, whose archive
+# contains symlinks that fail to extract on Windows without developer mode. The build is unsigned
+# either way (BRIEF.md accepts the one SmartScreen warning during setup), so nothing is lost except
+# the rewritten exe metadata. Verified option name for electron-builder 26 in
+# app-builder-lib/out/options/winOptions.d.ts.
+
+appId: net.pokerogue.offline
+productName: PokeRogue
+copyright: MIT licensed; PokeRogue is by the PokeRogue team
+asar: true
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - dist/**/*
+  - package.json
+  - "!**/*.map"
+
+extraResources:
+  - from: ../game-build/dist/game
+    to: game
+
+win:
+  target:
+    - nsis
+  icon: build/icon.png
+  signAndEditExecutable: false
+  artifactName: PokeRogue-Setup-${version}.exe
+
+nsis:
+  oneClick: true
+  perMachine: false
+  allowToChangeInstallationDirectory: false
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: PokeRogue
+  deleteAppDataOnUninstall: false
+  runAfterFinish: true

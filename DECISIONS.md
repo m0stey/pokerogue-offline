@@ -26,4 +26,4 @@
 - Accepted: we build and host game.zip ourselves from pinned upstream tags; installer bundles the game (~600 MB).
 - Backup policy approved: Documents\PokeRogue Backups, keep all for 30 days, then one per month, conflict/update backups kept forever.
 - Same-origin API: game compiled with VITE_SERVER_URL=http://127.0.0.1:47830/api (client builds URLs as base + path, so a prefix works).
-- Open: which GitHub repo hosts the game releases and the installer (needed for the updater).
+- GitHub repo for source, game releases and installer: https://github.com/m0stey/pokerogue-offline (UPDATE_REPO = m0stey/pokerogue-offline).

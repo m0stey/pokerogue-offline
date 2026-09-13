@@ -78,7 +78,7 @@ export interface ProxyOptions { gameDir: string; mirror: Mirror; port: 47830; co
 export function startProxy(opts: ProxyOptions): Promise<{ close(): Promise<void> }>;
 ```
 Behaviour:
-- Static: serve `gameDir` at `/` with correct MIME types, SPA fallback to `index.html`, `Cache-Control: no-cache` for `index.html`.
+- Static: serve `gameDir` at `/` with correct MIME types and `Cache-Control: no-cache` for `index.html` (`max-age=3600` for everything else). **No SPA fallback**: the built `index.html` loads its assets from relative `./assets/...` URLs, so it is served for `/` and `/index.html` only and every other missing path — including the `GET /manifest.json` the game fetches at startup, which is not in `dist` and must not be confused with the real `/manifest.webmanifest` — is a plain 404 (reports/game-build.md §4.1). Query strings are stripped before resolving a file (`getCachedUrl()` appends `?t=<timestamp>`).
 - `/api/*` online (see §4 classification): forward verbatim to `UPSTREAM_API` with the original method, body, `Authorization`, `Content-Type`, `PKR-Client-Version`, plus `Origin: https://pokerogue.net`. Return upstream status/body verbatim. Side effects on success only:
   - `POST /account/login` 200 → store token + username in `account.json` (username from the request body).
   - `GET /account/info` 200 → store info.
@@ -95,9 +95,12 @@ Behaviour:
   - `GET /savedata/system/verify` → `{valid:true, systemData: local or zeroed}` 200.
   - session `get/update/delete` → local with the same statuses the server uses; `update` sets dirty. Serve `null` arrays as `[]` normalisation is NOT done here (game tolerates null); keep bytes as stored.
   - `POST /savedata/updateall` → both, 200.
+  - `POST /savedata/session/clear` (run finished offline) → set the slot`s local to null (dirty), record `{ clearedAt, finalSave }` in the slot file, answer `{"success":true}` like the server. Never replayed to the server as `clear`.
   - `GET /game/titlestats`, `/daily/*`, anything else → 503 `offline` (game treats as unavailable).
 - Any upstream response whose `Content-Type` starts with `text/html`, or any network error / timeout (10 s), flips `Connectivity` to offline and the request is re-answered from the mirror as above. Never surface HTML to the game.
 - Status codes: never treat an empty body as success; branch on status.
+- `clientSessionId` rewrite: the game generates a new id per page load. The proxy replaces it (query param, and the body field for `updateall`) with the install-wide id from `state.json`, so the game and the sync engine never kick each other out of the active session. The game`s own id is never forwarded.
+- Each `writeLocal*` keeps the previous local value as `localPrev` in the same file (one-step undo for a bad write). No `.prsv` per gameplay save; that is the game saving normally.
 
 ### 3.5 `src/proxy/connectivity.ts`
 ```ts
@@ -124,7 +127,7 @@ Writes `.prsv` (system: key-shortened exactly like the client's export; session:
 export interface SyncResult { pushed: string[]; pulled: string[]; conflicts: string[]; errors: string[]; }
 export async function runSync(deps: { mirror; backup; api: UpstreamApi; policy: ConflictPolicy; log }): Promise<SyncResult>;
 ```
-Sequence: (1) if nothing dirty and base fresh (< 5 min), noop. (2) `system/get` with the mirror's `clientSessionId` → remote system. (3) decide system. (4) for each slot: `session/get` → decide. (5) apply: for every push or pull, `backup()` the side being replaced first; push system before sessions; immediately before each session push, re-`get` and re-compare that slot. (6) after each push, GET back and structurally compare (system: strict; session: after null/[] normalisation, ignoring server-dropped fields listed in `KNOWN_LOSSY_SESSION_FIELDS`). (7) update base/local/dirty. Conflicts go to the policy: `ask` (dialog once, remembers answer), `prefer-this-computer`, `prefer-online`. Never call `clear`, `newclear`, `verify`, or session `delete` from the engine.
+Sequence: (1) if nothing dirty and base fresh (< 5 min), noop. (2) `system/get` with the mirror's `clientSessionId` → remote system. (3) decide system. (4) for each slot: `session/get` → decide. (5) apply: for every push or pull, `backup()` the side being replaced first; push system before sessions; immediately before each session push, re-`get` and re-compare that slot. (6) after each push, GET back and structurally compare (system: strict; session: after null/[] normalisation, ignoring server-dropped fields listed in `KNOWN_LOSSY_SESSION_FIELDS`). (7) update base/local/dirty. Conflicts go to the policy: `ask` (dialog once, remembers answer), `prefer-this-computer`, `prefer-online`. Never call `clear`, `newclear`, or `verify` from the engine. `session/delete` is allowed only to propagate a run the game finished offline, and only when all hold: local slot is null with a recorded `clearedAt`, base is non-null, remote structurally equals base, and a verified `.prsv` backup of remote was written first.
 
 ### 3.9 `src/sync/errors.ts`
 Map server error substrings to typed reasons: `not active`, `existing playtime is greater`, `stored trainer or secret ID does not match`, `save version below minimum game version`, `existing version is greater`, `existing wave index is greater`, `slot id .* out of range`, `failed to validate token`, `missing token`. Unknown ⇒ `unknown-rejection` (fail safe: do nothing, keep dirty). `existing version is greater` ⇒ emit `needs-game-update`.
@@ -145,7 +148,7 @@ Map server error substrings to typed reasons: `not active`, `existing playtime i
 4. One `clientSessionId` per app install (stored in `state.json`), and every sync starts with `system/get` to claim it; any `not active` ⇒ re-GET, re-decide, retry once, then stop.
 5. Equal playtime ≠ unchanged; structural comparison decides.
 6. A mirror `local` is never overwritten by a `remote` that is not a descendant unless the conflict policy says so and a backup exists.
-7. The engine never calls `clear`, `newclear`, `verify`, `delete`.
+7. The engine never calls `clear`, `newclear`, `verify`; `delete` only under the §3.8 conditions.
 
 ## 5. Milestone 1 (must pass before anything else is polished)
 
