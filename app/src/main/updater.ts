@@ -80,7 +80,7 @@ export class Updater {
   private readonly updatesDir: string;
   private state: UpdateState;
   private timer: NodeJS.Timeout | null = null;
-  private checking = false;
+  private inflight: Promise<AvailableUpdate | null> | null = null;
   /** The first successful look after start happens regardless of when the last one was. */
   private checkedThisRun = false;
   private announced = false;
@@ -117,10 +117,21 @@ export class Updater {
     return this.checkNow(reason);
   }
 
-  async checkNow(reason: string): Promise<AvailableUpdate | null> {
-    if (this.checking || this.announced || this.deps.connectivity.state !== "online") return null;
-    this.checking = true;
+  /**
+   * Looks right away. A call made while a look is already running waits for that one and gets its
+   * answer, so "nothing found" is never reported just because two checks overlapped.
+   */
+  checkNow(reason: string): Promise<AvailableUpdate | null> {
+    if (this.inflight) return this.inflight;
+    if (this.announced || this.deps.connectivity.state !== "online") return Promise.resolve(null);
     this.checkedThisRun = true;
+    this.inflight = this.runCheck(reason).finally(() => {
+      this.inflight = null;
+    });
+    return this.inflight;
+  }
+
+  private async runCheck(reason: string): Promise<AvailableUpdate | null> {
     try {
       this.patch({ lastCheckAt: this.now() });
       const update = await this.findUpdate();
@@ -134,8 +145,6 @@ export class Updater {
       // A feed we cannot read is never worth a message: she just keeps playing.
       this.deps.log.warn("the update check did not work", { reason, error: String(err) });
       return null;
-    } finally {
-      this.checking = false;
     }
   }
 

@@ -23,17 +23,19 @@ function makeBuild(dir: string, version?: { tag: string; gameVersion: string }):
 }
 
 describe("finding the game files", () => {
-  it("prefers <userData>/game/current over the bundled copy", () => {
+  it("ignores a leftover <userData>/game/current and serves the copy from the installer", () => {
+    // Updates replace the program folder only. Serving anything else would make the updater compare
+    // against a version it can never change: a reinstall on every start, or no app updates at all.
     const userDataDir = tempDir();
     const resourcesPath = tempDir();
-    makeBuild(gamePaths(userDataDir).current, { tag: "v1.13.0.0", gameVersion: "1.13.0.0" });
+    makeBuild(gamePaths(userDataDir).current, { tag: "v1.11.0.0", gameVersion: "1.11.0.0" });
     makeBuild(path.join(resourcesPath, "game"), { tag: "v1.12.0.11", gameVersion: "1.12.0.11" });
 
     expect(locateGameDir({ userDataDir, resourcesPath, isPackaged: true })).toEqual({
-      dir: gamePaths(userDataDir).current,
-      source: "installed",
-      tag: "v1.13.0.0",
-      gameVersion: "1.13.0.0",
+      dir: path.join(resourcesPath, "game"),
+      source: "bundled",
+      tag: "v1.12.0.11",
+      gameVersion: "1.12.0.11",
     });
   });
 

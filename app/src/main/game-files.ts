@@ -54,9 +54,10 @@ export function looksLikeGameDir(dir: string): boolean {
 }
 
 export function locateGameDir(opts: LocateOptions): GameLocation | null {
-  const paths = gamePaths(opts.userDataDir);
+  // Only the copy that shipped with the installer. Updates replace the whole program folder, so
+  // a game folder anywhere else would never be updated and would make the updater compare against
+  // the wrong version (a reinstall on every start, or app updates blocked for good).
   const candidates: Array<{ dir: string; source: GameSource }> = [
-    { dir: paths.current, source: "installed" },
     { dir: join(opts.resourcesPath, "game"), source: "bundled" },
   ];
   if (!opts.isPackaged) candidates.push({ dir: opts.devGameDir ?? DEV_GAME_DIR, source: "dev" });
@@ -74,10 +75,8 @@ export function locateGameDir(opts: LocateOptions): GameLocation | null {
  * Make sure there is something to serve, and say where it is — or null, which the caller turns
  * into one plain-language message.
  *
- * The app does not install game updates itself any more (DECISIONS.md 2026-09-13, the scope trim):
- * a new game version arrives as a new installer, so there is no staging folder, no swap and
- * nothing to repair here. `<userData>/game/current` is still looked at first, so a build can be
- * put there by hand without reinstalling.
+ * Game updates arrive as a whole new installer (updater.ts), so the bundled copy in the program
+ * folder is the only one ever served. `<userData>/game/current` is deliberately ignored.
  */
 export function ensureGameFiles(opts: LocateOptions, log: Logger): GameLocation | null {
   const paths = gamePaths(opts.userDataDir);
@@ -96,7 +95,7 @@ export function ensureGameFiles(opts: LocateOptions, log: Logger): GameLocation 
       gameVersion: found.gameVersion ?? "unknown",
     });
   } else {
-    log.error("no game files found", { tried: [paths.current, join(opts.resourcesPath, "game"), DEV_GAME_DIR] });
+    log.error("no game files found", { tried: [join(opts.resourcesPath, "game"), DEV_GAME_DIR] });
   }
   return found;
 }
