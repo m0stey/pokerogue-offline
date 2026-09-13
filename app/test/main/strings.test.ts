@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import { formatPlayTime, formatRelative } from "../../src/main/format";
-import { APP_NAME, DE, OWNER_NAME } from "../../src/main/strings.de";
+import { APP_NAME, DE } from "../../src/main/strings.de";
 
 /** Every string in DE, with the functions called with plausible arguments. */
 function allStrings(): string[] {
@@ -65,8 +65,9 @@ describe("the German strings", () => {
     }
   });
 
-  it("tells her who to ask about a new version, and that nothing is lost", () => {
-    expect(DE.needsGameUpdate.detail).toContain(OWNER_NAME);
+  it("says a new version comes by itself, and that nothing is lost", () => {
+    expect(DE.needsGameUpdate.detail).toContain("automatisch");
+    expect(DE.update.ready).toContain("gespeichert");
     expect(DE.needsGameUpdate.detail).toContain("Browser");
     expect(DE.needsGameUpdate.detail).toContain("nichts verloren");
   });

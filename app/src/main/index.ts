@@ -34,6 +34,8 @@ import {
   openSettings,
   showBackupSavedNotice,
   showNeedsGameUpdateNotice,
+  openUpdateWindow,
+  type UpdateWindowState,
   showSavingSplash,
   showStartupError,
   type SettingsPageData,
@@ -46,7 +48,7 @@ import { createSecretCodec } from "./secret";
 import { SettingsStore, readJsonSafe } from "./settings";
 import { DE } from "./strings.de";
 import { createTray, destroyTray } from "./tray";
-import { Updater } from "./updater";
+import { Updater, type AvailableUpdate } from "./updater";
 import { createGameWindow, focusWindow } from "./window";
 
 const APP_FOLDER_NAME = "PokeRogue Offline";
@@ -138,8 +140,8 @@ async function start(): Promise<void> {
     userDataDir,
     log: log.child("updater"),
     connectivity,
-    installedTag: () => gameLocation?.tag ?? null,
-    onNewerVersion: () => showGameUpdateNotice("a newer game version has been published"),
+    installed: () => ({ gameTag: gameLocation?.tag ?? null, appVersion: app.getVersion() }),
+    onUpdateAvailable: (update) => startAutoUpdate(update),
   });
 
   gameLocation = ensureGameFiles(
@@ -338,10 +340,50 @@ function afterSync(result: SyncResult): void {
  * having something newer. Shown at most once per app start — she can only do one thing about it.
  */
 function showGameUpdateNotice(reason: string, detail?: Record<string, unknown>): void {
-  if (gameUpdateNoticeShown) return;
+  if (gameUpdateNoticeShown || !updater) return;
   gameUpdateNoticeShown = true;
-  log.warn("telling her the game needs to be updated", { reason, ...detail });
-  void showNeedsGameUpdateNotice(gameWindow);
+  log.warn("the game needs a newer version, looking for it now", { reason, ...detail });
+  const u = updater;
+  void (async () => {
+    // Usually the new version is already published: then the update window takes over.
+    if (u.updateFound) return;
+    const found = await u.checkNow(reason);
+    if (!found && !u.updateFound) void showNeedsGameUpdateNotice(gameWindow);
+  })();
+}
+
+/**
+ * A newer release exists: download it at once and show the update window with the progress.
+ * She can keep playing. Once verified, the installer runs when PokeRogue closes (restart button
+ * or closing the game), after the last save online.
+ */
+function startAutoUpdate(update: AvailableUpdate): void {
+  const state: UpdateWindowState = { phase: "downloading", fraction: 0, sizeBytes: update.sizeBytes };
+  log.info("downloading update", { release: update.releaseTag, bytes: update.sizeBytes });
+  const win = openUpdateWindow(
+    () => state,
+    { restartNow: () => app.quit(), installOnClose: () => undefined },
+    gameWindow,
+  );
+  const bar = (value: number) => {
+    if (gameWindow && !gameWindow.isDestroyed()) gameWindow.setProgressBar(value);
+  };
+  updater
+    ?.download(update, (fraction) => {
+      state.fraction = fraction;
+      bar(fraction);
+    })
+    .then(() => {
+      state.phase = "ready";
+      bar(-1);
+      win.show();
+    })
+    .catch((err) => {
+      log.warn("the update could not be downloaded", { error: String(err) });
+      state.phase = "failed";
+      bar(-1);
+      win.show();
+    });
 }
 
 async function onConflict(question: ConflictQuestion): Promise<ConflictAnswer> {
@@ -383,6 +425,13 @@ async function finishAndExit(): Promise<void> {
   } finally {
     if (splashTimer) clearTimeout(splashTimer);
     hideSavingSplash();
+  }
+  try {
+    // A verified new version waits: it installs now that the game is closed and starts it again.
+    const installer = updater?.readyInstaller;
+    if (installer) updater?.launchInstallerAfterExit(installer);
+  } catch (err) {
+    log?.warn("could not start the update installer", { error: String(err) });
   }
   try {
     updater?.stop();

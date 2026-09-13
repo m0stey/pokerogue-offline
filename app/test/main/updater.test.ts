@@ -1,14 +1,28 @@
-// The updater is a notice, not an installer (DECISIONS.md 2026-09-13). These tests cover the
-// three things it still has to get right: only look while online, only look every six hours, and
-// only speak up when there really is something newer.
+// Automatic update: find a newer release, download it, refuse anything that does not verify.
 
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { PassThrough } from "node:stream";
+import type { IncomingMessage } from "node:http";
+import { afterAll, describe, expect, it } from "vitest";
 import { noopLogger } from "../../src/common/log";
 import type { Connectivity } from "../../src/main/contracts";
-import { Updater, compareTags, gameTag } from "../../src/main/updater";
+import {
+  CHECKSUM_ASSET,
+  INSTALLER_ASSET,
+  RELEASE_INFO_ASSET,
+  Updater,
+  compareTags,
+  isAllowedDownloadUrl,
+  isNewer,
+  parseChecksum,
+  parseReleaseInfo,
+  pickRelease,
+  type AvailableUpdate,
+  type InstalledVersion,
+} from "../../src/main/updater";
 
 const dirs: string[] = [];
 const tempDir = (): string => {
@@ -20,196 +34,181 @@ afterAll(() => {
   for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-function fakeConnectivity(state: "online" | "offline" | "unknown"): Connectivity {
+function connectivity(state: "online" | "offline"): Connectivity {
+  return { state, probe: async () => undefined, markOffline: () => undefined, start: () => undefined, stop: () => undefined, on: () => undefined } as unknown as Connectivity;
+}
+
+const GH = "https://github.com/m0stey/pokerogue-offline/releases/download";
+function release(tag: string, opts: { assets?: string[]; draft?: boolean; size?: number } = {}) {
+  const names = opts.assets ?? [INSTALLER_ASSET, CHECKSUM_ASSET, RELEASE_INFO_ASSET];
   return {
-    state,
-    probe: async () => undefined,
-    markOffline: () => undefined,
-    start: () => undefined,
-    stop: () => undefined,
-    on: () => undefined,
+    tag_name: tag,
+    draft: opts.draft ?? false,
+    prerelease: false,
+    assets: names.map((name) => ({ name, browser_download_url: `${GH}/${tag}/${name}`, size: name === INSTALLER_ASSET ? (opts.size ?? 123) : 10 })),
   };
 }
 
-const release = (tag: string, extra: Record<string, unknown> = {}) => ({ tag_name: tag, ...extra });
+const INSTALLED: InstalledVersion = { gameTag: "v1.12.0.11", appVersion: "0.1.0" };
 
-interface Rig {
-  updater: Updater;
-  seen: { latestTag: string; installedTag: string }[];
-  fetches: string[];
-  userDataDir: string;
-}
-
-function rig(options: {
-  releases?: unknown;
-  installed?: string | null;
-  online?: boolean;
-  userDataDir?: string;
-}): Rig {
-  const seen: Rig["seen"] = [];
-  const fetches: string[] = [];
-  const userDataDir = options.userDataDir ?? tempDir();
+function rig(opts: { releases?: unknown; info?: unknown; online?: boolean; installed?: InstalledVersion } = {}) {
+  const found: AvailableUpdate[] = [];
   const updater = new Updater({
-    userDataDir,
+    userDataDir: tempDir(),
     log: noopLogger,
-    connectivity: fakeConnectivity(options.online === false ? "offline" : "online"),
-    installedTag: () => (options.installed === undefined ? "v1.12.0.11" : options.installed),
-    onNewerVersion: (info) => seen.push(info),
-    fetchJson: async (url) => {
-      fetches.push(url);
-      return options.releases ?? [];
-    },
+    connectivity: connectivity(opts.online === false ? "offline" : "online"),
+    installed: () => opts.installed ?? INSTALLED,
+    onUpdateAvailable: (u) => found.push(u),
+    fetchJson: async (url) => (url.endsWith(RELEASE_INFO_ASSET) ? opts.info : (opts.releases ?? [])),
   });
-  return { updater, seen, fetches, userDataDir };
+  return { updater, found };
 }
 
-beforeEach(() => {
-  vi.useRealTimers();
+describe("version rules", () => {
+  it("compares tags like the game server, with or without a leading v", () => {
+    expect(compareTags("v1.12.0.12", "1.12.0.11")).toBe(1);
+    expect(compareTags("v1.12.0.11", "v1.12.0.11")).toBe(0);
+    expect(compareTags("nonsense", "v1.12.0.11")).toBeNull();
+  });
+
+  it("updates for a newer game, or the same game with a newer app, never downgrades", () => {
+    expect(isNewer({ gameTag: "v1.12.0.12", appVersion: "0.1.0" }, INSTALLED)).toBe(true);
+    expect(isNewer({ gameTag: "v1.12.0.11", appVersion: "0.2.0" }, INSTALLED)).toBe(true);
+    expect(isNewer({ gameTag: "v1.12.0.11", appVersion: "0.1.0" }, INSTALLED)).toBe(false);
+    expect(isNewer({ gameTag: "v1.12.0.10", appVersion: "9.9.9" }, INSTALLED)).toBe(false);
+  });
+
+  it("treats an unreadable release description as nothing", () => {
+    expect(parseReleaseInfo({ gameTag: "v1.12.0.12", appVersion: "0.1.0" })).toEqual({ gameTag: "v1.12.0.12", appVersion: "0.1.0" });
+    expect(parseReleaseInfo({ gameTag: "latest", appVersion: "0.1.0" })).toBeNull();
+    expect(parseReleaseInfo(null)).toBeNull();
+  });
+
+  it("reads checksums written by sha256sum", () => {
+    const hex = "a".repeat(64);
+    expect(parseChecksum(`${hex}  PokeRogue-Setup.exe\n`)).toBe(hex);
+    expect(parseChecksum("nope")).toBeNull();
+  });
+
+  it("only downloads from GitHub over https", () => {
+    expect(isAllowedDownloadUrl(`${GH}/x/${INSTALLER_ASSET}`)).toBe(true);
+    expect(isAllowedDownloadUrl("https://release-assets.githubusercontent.com/abc")).toBe(true);
+    expect(isAllowedDownloadUrl("http://github.com/x")).toBe(false);
+    expect(isAllowedDownloadUrl("https://github.com.evil.example/x")).toBe(false);
+  });
 });
 
-describe("gameTag", () => {
-  it("takes the tag out of a `game-<tag>` release, from tag_name or name", () => {
-    expect(gameTag({ tag_name: "game-v1.12.0.11" })).toBe("v1.12.0.11");
-    expect(gameTag({ tag_name: null, name: "game-v1.13.0.0" })).toBe("v1.13.0.0");
+describe("pickRelease", () => {
+  it("takes the newest published release that has all three files", () => {
+    const picked = pickRelease([release("draft", { draft: true }), release("incomplete", { assets: [INSTALLER_ASSET] }), release("good", { size: 600 }), release("older")]);
+    expect(picked?.releaseTag).toBe("good");
+    expect(picked?.sizeBytes).toBe(600);
   });
 
-  it("ignores anything that is not a game release", () => {
-    expect(gameTag({ tag_name: "v1.12.0.11" })).toBeNull();
-    expect(gameTag({ tag_name: "app-v0.1.0" })).toBeNull();
-    expect(gameTag({ tag_name: "game-" })).toBeNull();
-    expect(gameTag({})).toBeNull();
+  it("returns nothing for a feed that is not a list", () => {
+    expect(pickRelease({ message: "rate limited" })).toBeNull();
   });
 });
 
-describe("compareTags", () => {
-  it("compares tags with or without the leading v", () => {
-    expect(compareTags("v1.12.1.0", "v1.12.0.11")).toBe(1);
-    expect(compareTags("1.12.0.11", "v1.12.0.11")).toBe(0);
-    expect(compareTags("v1.12.0.10", "v1.12.0.11")).toBe(-1);
+describe("checking", () => {
+  it("announces a newer release once", async () => {
+    const { updater, found } = rig({ releases: [release("r2")], info: { gameTag: "v1.12.0.12", appVersion: "0.1.0" } });
+    expect((await updater.checkNow("startup"))?.releaseTag).toBe("r2");
+    await updater.checkNow("again");
+    expect(found).toHaveLength(1);
+    expect(updater.updateFound).toBe(true);
   });
 
-  it("refuses to guess about a tag it cannot read", () => {
-    expect(compareTags("nightly", "v1.12.0.11")).toBeNull();
-    expect(compareTags("v1.12.0.11", "latest")).toBeNull();
-  });
-});
-
-describe("Updater: the notice", () => {
-  it("speaks up once when a newer game release exists", async () => {
-    const r = rig({ releases: [release("game-v1.13.0.0"), release("game-v1.12.0.11")] });
-    await r.updater.checkNow("test");
-    expect(r.seen).toEqual([{ latestTag: "v1.13.0.0", installedTag: "v1.12.0.11" }]);
+  it("says nothing when the release is the installed version", async () => {
+    const { updater, found } = rig({ releases: [release("r1")], info: { gameTag: "v1.12.0.11", appVersion: "0.1.0" } });
+    expect(await updater.checkNow("startup")).toBeNull();
+    expect(found).toHaveLength(0);
   });
 
-  it("says nothing when the newest release is the one we serve, or older", async () => {
-    for (const tag of ["game-v1.12.0.11", "game-v1.12.0.10"]) {
-      const r = rig({ releases: [release(tag)] });
-      await r.updater.checkNow("test");
-      expect(r.seen, tag).toEqual([]);
-    }
+  it("does not look while offline, and the first online look after start is not skipped", async () => {
+    const { updater, found } = rig({ online: false, releases: [release("r2")], info: { gameTag: "v1.12.0.12", appVersion: "0.1.0" } });
+    expect(await updater.checkNow("startup")).toBeNull();
+    (updater as unknown as { deps: { connectivity: Connectivity } }).deps.connectivity = connectivity("online");
+    expect((await updater.maybeCheck("came online"))?.releaseTag).toBe("r2");
+    expect(found).toHaveLength(1);
   });
 
-  it("skips drafts and pre-releases", async () => {
-    const r = rig({
-      releases: [
-        release("game-v2.0.0.0", { draft: true }),
-        release("game-v1.99.0.0", { prerelease: true }),
-        release("game-v1.12.0.11"),
-      ],
-    });
-    await r.updater.checkNow("test");
-    expect(r.seen).toEqual([]);
-  });
-
-  it("says nothing when it cannot tell which version is served", async () => {
-    const r = rig({ releases: [release("game-v1.13.0.0")], installed: null });
-    await r.updater.checkNow("test");
-    expect(r.seen).toEqual([]);
-  });
-
-  it("says nothing when the tags cannot be compared", async () => {
-    const r = rig({ releases: [release("game-nightly")] });
-    await r.updater.checkNow("test");
-    expect(r.seen).toEqual([]);
-  });
-
-  it("says nothing, and never asks GitHub, when a release feed answer makes no sense", async () => {
-    const r = rig({ releases: { message: "Not Found" } });
-    await r.updater.checkNow("test");
-    expect(r.seen).toEqual([]);
-  });
-
-  it("swallows a failing check entirely", async () => {
-    const r = rig({});
+  it("survives a broken feed without announcing anything", async () => {
+    const found: AvailableUpdate[] = [];
     const updater = new Updater({
-      userDataDir: r.userDataDir,
+      userDataDir: tempDir(),
       log: noopLogger,
-      connectivity: fakeConnectivity("online"),
-      installedTag: () => "v1.12.0.11",
-      onNewerVersion: () => expect.unreachable("should not speak up"),
+      connectivity: connectivity("online"),
+      installed: () => INSTALLED,
+      onUpdateAvailable: (u) => found.push(u),
       fetchJson: async () => {
-        throw new Error("no network");
+        throw new Error("network down");
       },
     });
-    await expect(updater.checkNow("test")).resolves.toBeUndefined();
+    expect(await updater.checkNow("startup")).toBeNull();
+    expect(found).toHaveLength(0);
   });
 });
 
-describe("Updater: when it looks", () => {
-  it("never looks while offline", async () => {
-    const r = rig({ releases: [release("game-v1.13.0.0")], online: false });
-    await r.updater.checkNow("test");
-    await r.updater.maybeCheck("test");
-    expect(r.fetches).toEqual([]);
-    expect(r.seen).toEqual([]);
-  });
+describe("download", () => {
+  const body = Buffer.alloc(60 * 1024 * 1024, 7);
+  const goodSha = createHash("sha256").update(body).digest("hex");
+  const update: AvailableUpdate = {
+    gameTag: "v1.12.0.12",
+    appVersion: "0.1.0",
+    releaseTag: "release-v1.12.0.12-app0.1.0",
+    installerUrl: `${GH}/r/${INSTALLER_ASSET}`,
+    checksumUrl: `${GH}/r/${CHECKSUM_ASSET}`,
+    sizeBytes: body.length,
+  };
 
-  it("looks at most once every six hours, remembered across restarts", async () => {
+  function streamOf(data: Buffer, status = 200, claimed = data.length): IncomingMessage {
+    const s = new PassThrough() as unknown as IncomingMessage;
+    (s as unknown as { statusCode: number }).statusCode = status;
+    (s as unknown as { headers: Record<string, string> }).headers = { "content-length": String(claimed) };
+    setImmediate(() => (s as unknown as PassThrough).end(data));
+    return s;
+  }
+
+  function downloader(checksum: string, data: Buffer, status = 200, claimed = data.length) {
     const userDataDir = tempDir();
-    const first = rig({ releases: [release("game-v1.12.0.11")], userDataDir });
-    await first.updater.maybeCheck("startup");
-    expect(first.fetches).toHaveLength(1);
-
-    await first.updater.maybeCheck("timer");
-    expect(first.fetches).toHaveLength(1);
-
-    // A fresh Updater over the same folder reads the timestamp back.
-    const second = rig({ releases: [release("game-v1.12.0.11")], userDataDir });
-    await second.updater.maybeCheck("startup");
-    expect(second.fetches).toEqual([]);
-  });
-
-  it("uses up its slot even when the check fails, instead of retrying in a loop", async () => {
-    const userDataDir = tempDir();
-    let calls = 0;
     const updater = new Updater({
       userDataDir,
       log: noopLogger,
-      connectivity: fakeConnectivity("online"),
-      installedTag: () => "v1.12.0.11",
-      onNewerVersion: () => undefined,
-      fetchJson: async () => {
-        calls += 1;
-        throw new Error("no network");
-      },
+      connectivity: connectivity("online"),
+      installed: () => INSTALLED,
+      onUpdateAvailable: () => undefined,
+      fetchText: async () => `${checksum}  ${INSTALLER_ASSET}`,
+      openStream: async () => streamOf(data, status, claimed),
     });
-    await updater.maybeCheck("startup");
-    await updater.maybeCheck("timer");
-    expect(calls).toBe(1);
-    expect(JSON.parse(fs.readFileSync(path.join(userDataDir, "update-state.json"), "utf8")).lastCheckAt)
-      .toBeGreaterThan(0);
+    return { updater, userDataDir };
+  }
+
+  it("keeps a verified installer and reports progress up to 100 %", async () => {
+    const { updater } = downloader(goodSha, body);
+    const progress: number[] = [];
+    const file = await updater.download(update, (f) => progress.push(f));
+    expect(fs.statSync(file).size).toBe(body.length);
+    expect(updater.readyInstaller).toBe(file);
+    expect(progress.at(-1)).toBe(1);
   });
 
-  it("asks the right repository", async () => {
-    const r = rig({ releases: [] });
-    await r.updater.checkNow("test");
-    expect(r.fetches).toEqual(["https://api.github.com/repos/m0stey/pokerogue-offline/releases?per_page=20"]);
+  it("throws away an installer whose checksum does not match", async () => {
+    const { updater, userDataDir } = downloader("b".repeat(64), body);
+    await expect(updater.download(update)).rejects.toThrow(/verification/);
+    expect(updater.readyInstaller).toBeNull();
+    expect(fs.readdirSync(path.join(userDataDir, "updates"))).toEqual([]);
   });
 
-  it("downloads nothing and touches no game folder", async () => {
-    const userDataDir = tempDir();
-    const r = rig({ releases: [release("game-v1.13.0.0")], userDataDir });
-    await r.updater.checkNow("test");
-    expect(fs.readdirSync(userDataDir).sort()).toEqual(["update-state.json"]);
+  it("throws away a truncated download", async () => {
+    const short = body.subarray(0, body.length - 1000);
+    const { updater } = downloader(createHash("sha256").update(short).digest("hex"), short, 200, body.length);
+    await expect(updater.download({ ...update, sizeBytes: body.length })).rejects.toThrow();
+    expect(updater.readyInstaller).toBeNull();
+  });
+
+  it("refuses a failed HTTP response", async () => {
+    const { updater } = downloader(goodSha, Buffer.alloc(0), 404);
+    await expect(updater.download(update)).rejects.toThrow(/404/);
   });
 });

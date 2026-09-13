@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self'" />
+    <title>PokéRogue</title>
+    <style>
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: #f7f7fa;
+        color: #1b1b1f;
+        font: 15px/1.5 "Segoe UI", system-ui, sans-serif;
+        user-select: none;
+      }
+      main { padding: 22px 24px; display: flex; flex-direction: column; gap: 14px; height: 100%; box-sizing: border-box; }
+      #text { margin: 0; }
+      .bar { height: 10px; background: #e2e2ea; border-radius: 5px; overflow: hidden; }
+      .bar div { height: 100%; width: 0; background: #d63031; transition: width 0.3s; }
+      #progress { font-size: 13px; color: #55555f; min-height: 1.5em; }
+      .buttons { margin-top: auto; display: flex; gap: 10px; justify-content: flex-end; }
+      button { font: inherit; padding: 6px 16px; border-radius: 6px; border: 1px solid #c8c8d2; background: #fff; cursor: pointer; }
+      button.primary { background: #d63031; border-color: #d63031; color: #fff; }
+      [hidden] { display: none !important; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p id="text"></p>
+      <div class="bar" id="bar"><div id="fill"></div></div>
+      <div id="progress"></div>
+      <div class="buttons">
+        <button id="secondary"></button>
+        <button id="primary" class="primary"></button>
+      </div>
+    </main>
+    <script src="update.js"></script>
+  </body>
+</html>

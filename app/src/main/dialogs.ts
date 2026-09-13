@@ -32,6 +32,7 @@ export interface DialogContext {
 }
 
 interface UiSession {
+  /** A value, or a function asked every time the page wants fresh data (the update window polls). */
   data: unknown;
   onSubmit?: (value: unknown) => unknown;
   onClosed?: () => void;
@@ -45,7 +46,10 @@ const sessions = new Map<number, UiSession>();
 export function installDialogs(context: DialogContext): void {
   ctx = context;
 
-  ipcMain.handle("ui:data", (event) => sessions.get(event.sender.id)?.data ?? null);
+  ipcMain.handle("ui:data", (event) => {
+    const data = sessions.get(event.sender.id)?.data;
+    return typeof data === "function" ? (data as () => unknown)() : (data ?? null);
+  });
 
   ipcMain.handle("ui:submit", (event, value: unknown) => {
     const session = sessions.get(event.sender.id);
@@ -305,6 +309,80 @@ export async function showNeedsGameUpdateNotice(parent?: BrowserWindow | null): 
     cancelId: 0,
     noLink: true,
   });
+}
+
+// ---------------------------------------------------------------------------
+// The update window
+// ---------------------------------------------------------------------------
+
+export type UpdatePhase = "downloading" | "ready" | "failed";
+
+export interface UpdateWindowState {
+  phase: UpdatePhase;
+  fraction: number;
+  sizeBytes: number;
+}
+
+export interface UpdateWindowHandle {
+  /** Brings the window back (or opens it again) to show the current phase. */
+  show(): void;
+  close(): void;
+}
+
+/**
+ * Small window for the automatic update. Reads the live state on every poll, so the caller only
+ * changes the state object. Buttons: while downloading, hide the window (the download goes on);
+ * when ready, restart now or on close; when failed, OK.
+ */
+export function openUpdateWindow(
+  state: () => UpdateWindowState,
+  actions: { restartNow: () => void; installOnClose: () => void },
+  parent?: BrowserWindow | null,
+): UpdateWindowHandle {
+  let win: BrowserWindow | null = null;
+  const t = DE.update;
+  const data = () => {
+    const s = state();
+    const mb = Math.max(1, Math.round(s.sizeBytes / (1024 * 1024)));
+    switch (s.phase) {
+      case "downloading":
+        return { phase: s.phase, text: t.downloading, fraction: s.fraction, progressText: t.progress(Math.floor(s.fraction * 100), mb), secondary: null, primary: t.hide };
+      case "ready":
+        return { phase: s.phase, text: t.ready, secondary: t.later, primary: t.restartNow };
+      default:
+        return { phase: s.phase, text: t.failed, secondary: null, primary: t.ok };
+    }
+  };
+  const onSubmit = (value: unknown) => {
+    const { phase, button } = (value ?? {}) as { phase?: string; button?: string };
+    if (phase === "ready" && button === "primary") actions.restartNow();
+    else if (phase === "ready" && button === "secondary") actions.installOnClose();
+    win?.close();
+    return null;
+  };
+  const open = () => {
+    if (win && !win.isDestroyed()) {
+      win.show();
+      win.focus();
+      return;
+    }
+    win = openUi({
+      page: "update.html",
+      width: 440,
+      height: 210,
+      title: t.title,
+      parent: parent ?? null,
+      alwaysOnTop: true,
+      session: { data, onSubmit, onClosed: () => (win = null) },
+    });
+  };
+  open();
+  return {
+    show: open,
+    close: () => {
+      if (win && !win.isDestroyed()) win.close();
+    },
+  };
 }
 
 /** One message, then the app closes. Used when we truly cannot start. */

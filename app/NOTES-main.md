@@ -18,7 +18,7 @@ clean for the whole project) and `npm run build` succeeds, including `wiring.ts`
 | `src/main/settings.ts` | `<userData>/settings.json` with defaults, validation, atomic writes; also the shared `writeJsonAtomic` / `readJsonSafe` |
 | `src/main/dialogs.ts` | Conflict window, settings window, "progress is safe" notice, "there is a new version" notice, startup error, saving splash; owns the IPC for our pages |
 | `src/main/preload-ui.ts` | `contextBridge` API for our pages only: `data()`, `submit()`, `openBackups()`, `close()` |
-| `src/main/updater.ts` | GitHub release check (≤ 1 per 6 h, online only) and **nothing else**: a newer `game-<tag>` calls `onNewerVersion`, which shows the notice. No download, no unpack, no swap. |
+| `src/main/updater.ts` | Automatic update: on start and every 6 h looks for a newer `release-*` on GitHub, downloads `PokeRogue-Setup.exe`, verifies SHA-256 and size, runs it silently after the app closes (DESIGN.md §3.10). |
 | `src/main/format.ts` | Seconds and timestamps → the German words she reads (wording from `strings.de.ts`) |
 | `src/main/strings.de.ts` | **Every user-visible string**, in one place, plus `OWNER_NAME` and `APP_NAME` |
 | `src/main/secret.ts` | The only file that touches Electron `safeStorage`; builds the `SecretCodec` the Mirror encrypts the token with |
@@ -127,11 +127,7 @@ Nothing above contains a technical term. The game itself shows Play Time as `DD:
 - **Port 47830 already in use.** We hold the single-instance lock first, so a second launch of
   PokeRogue never reaches the server code (it just brings the running window forward). If binding
   still fails with `EADDRINUSE`, it is genuinely another program: one plain message, then exit.
-- **The app installs nothing** (scope trim, 2026-09-13). The updater used to download `game.zip`,
-  check its SHA-256, unpack it with `tar.exe`, and swap `current` → `previous` at the next start.
-  All of that is deleted, together with the `staging`/`previous` folders, the swap-repair logic in
-  `game-files.ts`, the metered-connection detection and its prompt, and the `allowMeteredDownloads`
-  / `gameUpdateChannel` / `lastSeenGameTag` settings. A new game version is a new installer.
+- **Updates run the whole installer** (2026-09-13, owner request). Download to `<userData>/updates`, verify, then after quit a hidden PowerShell waits for the PID and runs `PokeRogue-Setup.exe /S --updated --force-run`. No game-file swapping, no staging folders.
 - **`lastCheckAt` is written before the check runs**, so a failing check still uses up its 6 h slot
   instead of retrying in a loop.
 - **One "new version" message per app start, from three sources.** The proxy seeing a save newer
@@ -167,12 +163,7 @@ German.)*
    writes to `<documentsDir>/PokeRogue Backups`. The setting therefore only feeds the "Ordner
    öffnen" button and is never user-editable, so today the two agree. Still open, and deliberately
    so: a movable backups folder is one more thing to get wrong.
-3. **`OWNER_NAME` in `strings.de.ts` is a guess** (`"Alexander"`). It is the only name in the app and
-   it appears in the one message that tells her who to ask for a new version. Confirm the spelling
-   she would recognise.
-4. **No `game-<tag>` release exists yet.** Until the owner dispatches the Actions workflow once, the
-   update check finds nothing, logs it, and shows nothing — which is the correct behaviour, but it
-   means the release-feed half of the notice has never run against a real feed.
+4. **No `release-*` exists until the Release workflow has run once** (Actions tab, or the 4-hourly schedule). Until then the update check finds nothing and says nothing.
 5. **Where is the installer published?** Updating the app itself is not implemented and no longer
    planned: a new version is a new installer, run by hand. Confirm that is how it will be handed
    over.
