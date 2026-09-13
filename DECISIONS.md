@@ -88,3 +88,22 @@ a usable version for her that's stable and secure"), the following was decided a
 - Silent reinstall with relaunch verified on this machine: app closed after saving online, installer ran with /S --updated --force-run, app restarted by itself, save files unchanged.
 - The owner-name constant is gone; no message tells her to ask anyone for updates.
 - docs/ANLEITUNG.md replaced by docs/EINRICHTUNG.md, a one-time setup checklist for the owner to go through with her.
+
+## 2026-09-13 — max code review, 15 findings
+Fixed:
+1. Loading a save online no longer replaces unsynced offline progress: the proxy runs a sync first (max 2 min) and otherwise serves this computer's copy; the online download never overwrites a dirty record.
+2. After online progress is brought over, the game's own browser copies are saved as .prsv to the backups folder, removed, and the game reloads.
+3. Release workflow split: the build job (runs upstream code) has a read-only token not kept in the checkout; only the publish job can write releases.
+4. Chromium cache and service-worker caches are cleared when the served build changes.
+5. A different account logging in moves the previous account's mirror saves to mirror/other-accounts/ instead of uploading them into the new account.
+6. A run finished offline is only removed online after re-reading both sides right before the delete.
+7. Push and pull are skipped when the game saved again after the sync decided; the next sync decides with the current copy.
+8. Transient read errors on mirror files are retried and then fail loudly; only unparseable files are quarantined.
+9. "Zuletzt online gespeichert" shows only successful syncs (state.json lastSuccessfulSyncAt).
+10. Dialog windows no longer read webContents after they are destroyed.
+11. One backups folder: always Documents\PokeRogue Backups resolved at the moment of use.
+12. Routine sync backups use reason "sync" and are pruned at every start (30 days, then monthly); conflict and rejected backups stay.
+13. A failure anywhere during start-up shows one message and exits instead of leaving a windowless process.
+14. Backups are flushed to disk before they count as verified.
+15. Partly: releases are blocked when the game calls server routes not listed in game-build/known-api-routes.json. There is still no automatic rollback to a previous version.
+Verified: 438 tests, offline round trip against the real server rerun with a reload right after reconnect (all 16 steps pass).

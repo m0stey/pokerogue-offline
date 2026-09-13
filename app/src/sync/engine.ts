@@ -321,7 +321,14 @@ export async function runSync(deps: SyncDeps): Promise<SyncResult> {
   }
 
   async function pushSystem(local: SystemSave, remote: SystemSave | null, fromConflict: boolean): Promise<void> {
-    const reason: BackupReason = fromConflict ? "conflict" : "update";
+    const reason: BackupReason = fromConflict ? "conflict" : "sync";
+    // The game may have saved (online, through the proxy) since we decided. Pushing the older copy
+    // would be refused or, worse, accepted; the next sync decides again with the current one.
+    const current = mirror.readSystem().local;
+    if (!current || !systemEquals(current, local)) {
+      log.info("the game saved again since the sync decided; leaving the system save for the next sync");
+      return;
+    }
     // Invariant §4.1: back up what the server is about to lose, before touching it.
     if (remote) {
       await backup.backup("system", null, remote, reason);
@@ -370,7 +377,12 @@ export async function runSync(deps: SyncDeps): Promise<SyncResult> {
     if (!remote) {
       return; // handled by the caller; a null pull never reaches here
     }
-    const reason: BackupReason = fromConflict ? "conflict" : "update";
+    const reason: BackupReason = fromConflict ? "conflict" : "sync";
+    if (!systemEquals(mirror.readSystem().local, local)) {
+      // The game saved in the meantime: the copy we would back up is not the one we would replace.
+      log.info("the game saved again since the sync decided; not bringing the online system save over yet");
+      return;
+    }
     if (local) {
       // Invariant §4.1 and §4.6: the local copy is backed up before anything replaces it.
       await backup.backup("system", null, local, reason);
@@ -387,7 +399,12 @@ export async function runSync(deps: SyncDeps): Promise<SyncResult> {
     fromConflict: boolean,
   ): Promise<void> {
     const target = `session${slot}`;
-    const reason: BackupReason = fromConflict ? "conflict" : "update";
+    const reason: BackupReason = fromConflict ? "conflict" : "sync";
+    const currentLocal = mirror.readSession(slot).local;
+    if (!currentLocal || !sessionEquals(currentLocal, local)) {
+      log.info("the game saved this run again since the sync decided; leaving it for the next sync", { slot });
+      return;
+    }
 
     // §3.8(5): re-read the slot immediately before pushing. `session/update` is NOT gated on the
     // active session, so the server will happily let us clobber a run it accepted a second ago.
@@ -467,7 +484,11 @@ export async function runSync(deps: SyncDeps): Promise<SyncResult> {
     remote: SessionSave | null,
     fromConflict: boolean,
   ): Promise<void> {
-    const reason: BackupReason = fromConflict ? "conflict" : "update";
+    const reason: BackupReason = fromConflict ? "conflict" : "sync";
+    if (!sessionEquals(mirror.readSession(slot).local, local)) {
+      log.info("the game saved this run again since the sync decided; not bringing the online run over yet", { slot });
+      return;
+    }
     if (local) {
       await backup.backup("session", slot, local, reason);
     }
@@ -487,10 +508,17 @@ export async function runSync(deps: SyncDeps): Promise<SyncResult> {
    * The game finished this run offline. Preconditions were checked by {@link mayPropagateClear};
    * the only remaining duty is Invariant §4.1 — a verified `.prsv` of the server's copy first.
    */
-  async function propagateOfflineClear(slot: number, remote: SessionSave): Promise<void> {
+  async function propagateOfflineClear(slot: number, remoteAtDecision: SessionSave): Promise<void> {
     const target = `session${slot}`;
+    // The game may have started a new run in this slot (online, through the proxy) while the sync
+    // was busy with other saves. Read both sides again; only an untouched slot is removed.
+    const remote = await getSessionOrThrow(api, slot, csid);
+    if (!remote || !sessionEquals(remote, remoteAtDecision) || !mayPropagateClear(mirror.readSession(slot), remote)) {
+      log.info("the slot changed since the sync decided; not removing anything", { slot });
+      return;
+    }
     try {
-      const path = await backup.backup("session", slot, remote, "update");
+      const path = await backup.backup("session", slot, remote, "sync");
       log.info("propagating a run finished offline; the run was exported first", { slot, path });
     } catch (err) {
       result.errors.push(`${target}:backup-failed`);
@@ -624,9 +652,12 @@ function isEverythingFresh(mirror: MirrorPort, nowMs: number, freshnessMs: numbe
 
 function finishState(mirror: MirrorPort, nowMs: number, result: SyncResult): void {
   try {
+    const at = new Date(nowMs).toISOString();
+    const ok = result.errors.length === 0 && result.unrecoverable.length === 0;
     mirror.writeState({
-      lastSyncAt: new Date(nowMs).toISOString(),
+      lastSyncAt: at,
       lastSyncResult: result.errors.length > 0 ? "error" : result.conflicts.length > 0 ? "conflict" : "ok",
+      ...(ok ? { lastSuccessfulSyncAt: at } : {}),
     });
   } catch {
     /* the mirror is best-effort here; never fail a sync over bookkeeping */

@@ -1,0 +1,27 @@
+{
+  "reviewedFor": "v1.12.0.11",
+  "note": "Routes the game client calls. Save and account routes are answered offline by app/src/proxy/replay.ts; the rest get 503 offline, which the game tolerates.",
+  "routes": [
+    "/account/changepw",
+    "/account/info",
+    "/account/login",
+    "/account/logout",
+    "/account/register",
+    "/admin/account/adminSearch",
+    "/auth/discord/logout",
+    "/auth/google/logout",
+    "/daily/rankingpagecount",
+    "/daily/rankings",
+    "/daily/seed",
+    "/game/titlestats",
+    "/savedata/session/clear",
+    "/savedata/session/delete",
+    "/savedata/session/get",
+    "/savedata/session/newclear",
+    "/savedata/session/update",
+    "/savedata/system/get",
+    "/savedata/system/update",
+    "/savedata/system/verify",
+    "/savedata/updateall"
+  ]
+}

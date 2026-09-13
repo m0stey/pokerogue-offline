@@ -58,7 +58,7 @@ afterEach(async () => {
 });
 
 async function setup(
-  options: { mode?: FakeMode; upstreamTimeoutMs?: number; offline?: boolean; gameVersion?: string } = {},
+  options: { mode?: FakeMode; upstreamTimeoutMs?: number; offline?: boolean; gameVersion?: string; beforeSaveRead?: () => Promise<void> } = {},
 ): Promise<Harness> {
   const fake = await startFakeUpstream(options.mode ?? "normal");
   const workspace = tempDir();
@@ -93,6 +93,7 @@ async function setup(
     log,
     upstreamBaseUrl: fake.url,
     upstreamTimeoutMs: options.upstreamTimeoutMs ?? 2000,
+    beforeSaveRead: options.beforeSaveRead,
   });
 
   fake.state.accounts.set("offsync", {
@@ -785,5 +786,61 @@ describe("the Host header must be ours", () => {
       }
     }
     expect(h.fake.requests).toHaveLength(0);
+  });
+});
+
+describe("progress that is not online yet (code review 2026-09-13)", () => {
+  it("syncs first, and never lets the game load an older online save over it", async () => {
+    let syncs = 0;
+    const h = await setup({ beforeSaveRead: async () => { syncs++; } });
+    await login(h);
+    await httpRequest(h.proxy.url, "/api/savedata/system/get?clientSessionId=A", { headers: auth(h) });
+    const system = makeSystem();
+    const put = await httpRequest(h.proxy.url, "/api/savedata/system/update?clientSessionId=A", {
+      method: "POST",
+      headers: { ...auth(h), ...JSON_HEADERS },
+      body: JSON.stringify(system),
+    });
+    expect(put.status).toBe(204);
+
+    // Played offline: the mirror is ahead of the server.
+    const offline = withPlayTime(system, (system.gameStats as { playTime: number }).playTime + 600);
+    h.mirror.writeLocalSystem(offline);
+    expect(h.mirror.readSystem().dirty).toBe(true);
+
+    const get = await httpRequest(h.proxy.url, "/api/savedata/system/get?clientSessionId=B", { headers: auth(h) });
+    expect(syncs).toBe(1);
+    expect(get.status).toBe(200);
+    expect(JSON.parse(get.body)).toEqual(offline);
+    expect(h.mirror.readSystem().local).toEqual(offline);
+    expect(h.mirror.readSystem().dirty).toBe(true);
+  });
+
+  it("forwards normally once everything is online", async () => {
+    let syncs = 0;
+    const h = await setup({ beforeSaveRead: async () => { syncs++; } });
+    await login(h);
+    await httpRequest(h.proxy.url, "/api/savedata/system/get?clientSessionId=A", { headers: auth(h) });
+    const system = makeSystem();
+    await httpRequest(h.proxy.url, "/api/savedata/system/update?clientSessionId=A", {
+      method: "POST",
+      headers: { ...auth(h), ...JSON_HEADERS },
+      body: JSON.stringify(system),
+    });
+    const get = await httpRequest(h.proxy.url, "/api/savedata/system/get?clientSessionId=A", { headers: auth(h) });
+    expect(get.status).toBe(200);
+    expect(syncs).toBe(0);
+  });
+
+  it("sets the previous account's saves aside when a different account logs in", async () => {
+    const h = await setup();
+    h.mirror.writeAccount({ username: "someone_else", token: "t", info: null, lastLoginAt: null });
+    h.mirror.writeLocalSystem(makeSystem());
+    await login(h);
+    expect(h.mirror.readSystem().local).toBeNull();
+    const archive = path.join(h.mirror.dir, "other-accounts");
+    const [folder] = fs.readdirSync(archive);
+    expect(folder).toMatch(/^someone_else-/);
+    expect(fs.existsSync(path.join(archive, folder!, "system.json"))).toBe(true);
   });
 });

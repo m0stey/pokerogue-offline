@@ -9,7 +9,7 @@
 // After writing, the file is re-read from disk, decrypted, parsed, and structurally compared
 // against what we meant to save. Only then does `backup()` resolve.
 
-import { copyFile, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, open, readFile, readdir, rename, rm, stat } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { Logger } from "../common/log";
 import { noopLogger } from "../common/log";
@@ -19,7 +19,8 @@ import { decryptPrsv, encryptPrsv, expandSystemDataStr, shortenSystemDataStr } f
 export type BackupKind = "system" | "session";
 
 /**
- * `conflict`, `update` and `rejected` are never pruned (DESIGN.md §3.7).
+ * `conflict`, `update` and `rejected` are never pruned (DESIGN.md §3.7). Routine sync backups use
+ * `sync` and follow the retention policy.
  * `rejected` is the fallback export written when the online service refused a save for a reason we
  * do not understand — the one copy she has if that refusal turns out to be permanent.
  */
@@ -196,7 +197,15 @@ export function createBackupManager(opts: BackupManagerOptions): BackupManager {
 
     // Write to a temp file and rename, so a crash never leaves a half-written ".prsv".
     const tmp = `${primaryPath}.tmp`;
-    await writeFile(tmp, blob, "utf8");
+    // Flushed to disk before the rename: the engine replaces the original right after this, and a
+    // backup that only lived in the OS cache would not survive a dead battery.
+    const handle = await open(tmp, "w");
+    try {
+      await handle.writeFile(blob, "utf8");
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     await rename(tmp, primaryPath);
 
     // Verify by reading the file back off disk — not from memory.

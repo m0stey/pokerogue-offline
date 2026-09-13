@@ -48,6 +48,12 @@ export interface ProxyOptions {
    * Used only to notice a save that is newer than this build (`needs-game-update`).
    */
   gameVersion?: string | null;
+  /**
+   * Called before the game's save is loaded from the server while something on this computer is
+   * not online yet. The shell runs a sync here, so the game never loads an older online copy over
+   * progress made offline. Must settle on its own (the shell gives it a time limit).
+   */
+  beforeSaveRead?: () => Promise<void>;
 }
 
 /** What the proxy tells the shell about. */
@@ -221,7 +227,26 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
       });
     };
 
-    if (connectivity.state !== "offline") {
+    const normalisedPath = apiPath.replace(/\/+$/, "");
+    const isSaveRead = method === "GET" && (normalisedPath === "/savedata/system/get" || normalisedPath === "/savedata/session/get");
+    let answerFromMirror = false;
+    if (connectivity.state !== "offline" && isSaveRead && mirrorUnsynced()) {
+      // Progress from offline play is not online yet. Let the sync bring it online first; if it
+      // cannot (conflict still open, refused, no connection), the game gets this computer's copy.
+      if (opts.beforeSaveRead) {
+        try {
+          await opts.beforeSaveRead();
+        } catch (err) {
+          log.warn("sync before loading the save did not finish", { error: String(err) });
+        }
+      }
+      answerFromMirror = recordUnsynced(normalisedPath, query);
+      if (answerFromMirror) {
+        log.info("this computer has progress that is not online yet; the game gets that copy", { path: normalisedPath });
+      }
+    }
+
+    if (connectivity.state !== "offline" && !answerFromMirror) {
       let upstreamPath = rest;
       let upstreamBody = body;
       if (apiPath.startsWith("/savedata/")) {
@@ -262,6 +287,38 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
     finish(response.status, "replay");
   }
 
+  function mirrorUnsynced(): boolean {
+    try {
+      return mirror.hasUnsynced();
+    } catch {
+      return true; // cannot tell: the safe answer is "do not overwrite"
+    }
+  }
+
+  function recordUnsynced(normalisedPath: string, query: URLSearchParams): boolean {
+    try {
+      if (normalisedPath === "/savedata/system/get") return mirror.readSystem().dirty;
+      const slot = slotFromQuery(query);
+      if (slot === null) return false;
+      const rec = mirror.readSession(slot);
+      return rec.dirty || (typeof rec.clearedAt === "string" && rec.clearedAt.length > 0);
+    } catch {
+      return true;
+    }
+  }
+
+  /** A new user name means a different account: park the previous account's saves first. */
+  function switchAccountIfNeeded(username: string): void {
+    const previous = mirror.readAccount();
+    if (!previous?.username || !username || previous.username.toLowerCase() === username.toLowerCase()) return;
+    const archived = mirror.archiveSavesOf(previous.username);
+    log.warn("a different account logged in; the previous account's saves were set aside", {
+      previous: previous.username,
+      now: username,
+      archived,
+    });
+  }
+
   /** DESIGN §3.4: side effects on success only, branching on status codes. */
   function applySideEffects(
     apiPath: string,
@@ -281,6 +338,7 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
             return;
           }
           const username = new URLSearchParams(requestBody.toString("utf8")).get("username") ?? "";
+          switchAccountIfNeeded(username);
           const previous = mirror.readAccount();
           const record: AccountRecord = {
             username,
@@ -299,6 +357,7 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
           if (!info || typeof info.username !== "string") {
             return;
           }
+          switchAccountIfNeeded(info.username);
           const previous = mirror.readAccount();
           mirror.writeAccount({
             username: info.username,
@@ -314,7 +373,8 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
           }
           const save = parseJson(result.body) as SystemSave | null;
           if (save) {
-            mirror.setSystemSynced(save);
+            // Never let a download replace progress that is not online yet (code review 2026-09-13).
+            if (!mirror.readSystem().dirty) mirror.setSystemSynced(save);
             checkGameVersion(save, "upstream");
           }
           return;
@@ -335,7 +395,7 @@ export async function startProxy(opts: ProxyOptions): Promise<ProxyHandle> {
           }
           const slot = slotFromQuery(query);
           const save = parseJson(result.body) as SessionSave | null;
-          if (slot !== null && save) {
+          if (slot !== null && save && !recordUnsynced("/savedata/session/get", query)) {
             mirror.setSessionSynced(slot, save);
           }
           return;

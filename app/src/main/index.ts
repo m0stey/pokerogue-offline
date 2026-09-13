@@ -11,7 +11,8 @@
 // Nothing in here ever asks the user a question she did not cause, except the one conflict
 // question. Everything she reads is in strings.de.ts.
 
-import { BrowserWindow, app, net, powerMonitor } from "electron";
+import { BrowserWindow, app, net, powerMonitor, session } from "electron";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -34,6 +35,7 @@ import {
   openSettings,
   showBackupSavedNotice,
   showNeedsGameUpdateNotice,
+  currentBackupsDir,
   openUpdateWindow,
   type UpdateWindowState,
   showSavingSplash,
@@ -93,7 +95,16 @@ if (!app.requestSingleInstanceLock()) {
 } else {
   app.on("second-instance", () => focusWindow(gameWindow));
   app.whenReady().then(
-    () => void start(),
+    () =>
+      start().catch((err: unknown) => {
+        try {
+          log?.error("start-up failed", { error: String(err) });
+        } catch {
+          console.error("PokeRogue could not start:", err);
+        }
+        showStartupError(DE.startup.generic);
+        app.exit(1);
+      }),
     (err: unknown) => {
       // Too early for the file logger; the console is all there is, and she must not read it.
       console.error("PokeRogue could not start:", err);
@@ -162,7 +173,16 @@ async function start(): Promise<void> {
     });
   }
 
+  await forgetCachedGameFilesAfterUpdate(userDataDir);
+
   if (!(await startGameServer(userDataDir))) return;
+
+  // Finding 12: apply the backup retention policy once per start (routine copies older than 30 days
+  // are thinned to one per month; conflict and rejected copies are kept).
+  void runtime
+    ?.makeBackupManager({ documentsDir: app.getPath("documents"), userDataDir, log: log.child("backup") })
+    .prune()
+    .catch((err: unknown) => log.warn("could not tidy old backups", { error: String(err) }));
 
   scheduleSyncOnConnectivity();
   connectivity.start();
@@ -226,6 +246,7 @@ async function startGameServer(userDataDir: string): Promise<boolean> {
       connectivity,
       log: log.child("proxy"),
       gameVersion: gameLocation.gameVersion,
+      beforeSaveRead: () => syncBeforeGameLoadsSave(),
     });
     // The save online was written by a newer game than this build, so the game itself will
     // refuse to open her account (reports/milestone-1.md §3). Say so, once.
@@ -321,7 +342,75 @@ async function runSyncNow(reason: string): Promise<SyncResult | null> {
   return syncInFlight;
 }
 
+/**
+ * Waits for a sync while the game is loading its save and this computer has progress that is not
+ * online yet. Bounded, so a missing answer never keeps the game on its loading screen for long;
+ * the proxy then gives the game this computer's copy.
+ */
+async function syncBeforeGameLoadsSave(): Promise<void> {
+  await Promise.race([
+    runSyncNow("the game is loading its save"),
+    new Promise((resolve) => setTimeout(resolve, 120_000)),
+  ]);
+}
+
+/**
+ * Online progress replaced a save on this computer. The game still holds the old one in memory and
+ * in its own browser storage (which it prefers when that is newer), so its next save would undo the
+ * sync. Its stored copies are first written to the backups folder, then removed, then the game
+ * reloads and picks up the saves from the mirror.
+ */
+async function reloadGameWithBroughtOverSaves(pulled: string[]): Promise<void> {
+  const win = gameWindow;
+  const username = mirror?.readAccount()?.username;
+  if (!win || win.isDestroyed() || !username) return;
+  const keys = [`data_${username}`, `sessionData_${username}`, ...[1, 2, 3, 4].map((n) => `sessionData${n}_${username}`)];
+  log.info("progress from online was brought over; reloading the game so it uses it", { pulled });
+  try {
+    const stored = (await win.webContents.executeJavaScript(
+      `(() => { const keys = ${JSON.stringify(keys)}; const out = {}; for (const k of keys) { const v = localStorage.getItem(k); if (v !== null) out[k] = v; } return out; })()`,
+    )) as Record<string, string>;
+    const now = new Date();
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const dir = join(currentBackupsDir(), `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`);
+    mkdirSync(dir, { recursive: true });
+    const time = `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    for (const [key, value] of Object.entries(stored)) {
+      // The game stores these exactly in the .prsv format, so they import like any other backup.
+      writeFileSync(join(dir, `${time}-spielkopie-${key.replace(/[^\w-]/g, "_")}.prsv`), value, "utf8");
+    }
+    await win.webContents.executeJavaScript(`${JSON.stringify(Object.keys(stored))}.forEach((k) => localStorage.removeItem(k)); true`);
+  } catch (err) {
+    log.warn("could not clear the game's own copy before reloading", { error: String(err) });
+  }
+  if (!win.isDestroyed()) win.webContents.reload();
+}
+
+/** Clears Chromium's HTTP cache and the game's service-worker caches when the build changed. */
+async function forgetCachedGameFilesAfterUpdate(userDataDir: string): Promise<void> {
+  const marker = join(userDataDir, "served-build.txt");
+  const current = `${gameLocation?.tag ?? "unknown"}|${app.getVersion()}`;
+  let previous = "";
+  try {
+    previous = readFileSync(marker, "utf8").trim();
+  } catch {
+    /* first start */
+  }
+  if (previous === current) return;
+  try {
+    await session.defaultSession.clearCache();
+    await session.defaultSession.clearStorageData({ storages: ["serviceworkers", "cachestorage"] });
+    writeFileSync(marker, current, "utf8");
+    log.info("new build: cleared cached game files", { previous: previous || null, current });
+  } catch (err) {
+    log.warn("could not clear cached game files", { error: String(err) });
+  }
+}
+
 function afterSync(result: SyncResult): void {
+  if (result.pulled.length > 0) {
+    void reloadGameWithBroughtOverSaves(result.pulled);
+  }
   // The engine says so outright now; nothing here matches on error strings any more.
   if (result.needsGameUpdate) {
     showGameUpdateNotice("the online service says the game is out of date");
@@ -479,7 +568,7 @@ function settingsPageData(userDataDir: string): SettingsPageData {
   const peek = peekMirror(userDataDir);
   return {
     conflictPolicy: s.conflictPolicy,
-    backupsDir: s.backupsDir,
+    backupsDir: currentBackupsDir(),
     gameVersion: gameLocation?.tag ?? DE.settings.unknown,
     lastSavedOnline: peek.lastSyncAt ? formatRelative(peek.lastSyncAt) : DE.settings.notYet,
     playTime: formatPlayTime(peek.playTimeSeconds),
@@ -492,6 +581,7 @@ function settingsPageData(userDataDir: string): SettingsPageData {
  * falls back to reading the two files directly, so the page also works before the mirror exists.
  */
 function peekMirror(userDataDir: string): { playTimeSeconds: number | null; lastSyncAt: string | number | null } {
+  // "Zuletzt online gespeichert" means it worked: failed or aborted attempts do not count.
   const dir = join(userDataDir, "mirror");
   let playTimeSeconds: number | null = null;
   try {
@@ -503,6 +593,6 @@ function peekMirror(userDataDir: string): { playTimeSeconds: number | null; last
   }
   const state = mirror
     ? mirror.readState()
-    : readJsonSafe<{ lastSyncAt?: string | number | null }>(join(dir, "state.json"), {});
-  return { playTimeSeconds, lastSyncAt: state.lastSyncAt ?? null };
+    : readJsonSafe<{ lastSuccessfulSyncAt?: string | null }>(join(dir, "state.json"), {});
+  return { playTimeSeconds, lastSyncAt: state.lastSuccessfulSyncAt ?? null };
 }
