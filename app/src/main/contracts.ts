@@ -48,6 +48,8 @@ export interface MirrorState {
   /** src/proxy writes an ISO string; src/sync/mirror-port.ts declares a number. Accept both. */
   lastSyncAt?: string | number | null;
   lastSyncResult?: string | null;
+  /** When saving online last worked. The settings page shows only this. */
+  lastSuccessfulSyncAt?: string | null;
   gameVersionServed?: string | null;
 }
 
@@ -94,6 +96,8 @@ export interface ProxyOptions {
   log: Logger;
   /** `gameVersion` from the served build's `version.json`. Defaults to reading it from `gameDir`. */
   gameVersion?: string | null;
+  /** Runs a sync before the game loads a save while progress on this computer is not online yet. */
+  beforeSaveRead?: () => Promise<void>;
 }
 
 /** Everything the proxy tells the shell about. Today that is one thing. */

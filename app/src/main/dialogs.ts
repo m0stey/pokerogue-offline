@@ -2,7 +2,8 @@
 // Rule for this file: no technical words. No "Sync", "Server", "Cache", "Token", "Mirror".
 // If a sentence needs one of those, the sentence is wrong. Every word lives in strings.de.ts.
 
-import { BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { BrowserWindow, app, dialog, ipcMain, shell } from "electron";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Logger } from "../common/log";
 import type { ConflictAnswer, ConflictQuestion } from "./contracts";
@@ -110,21 +111,23 @@ function openUi(opts: OpenUiOptions): BrowserWindow {
     },
   });
   win.removeMenu();
-  sessions.set(win.webContents.id, opts.session);
+  // Captured now: inside "closed" the webContents is already destroyed and reading it throws.
+  const contentsId = win.webContents.id;
+  sessions.set(contentsId, opts.session);
   win.once("ready-to-show", () => {
     win.show();
     win.focus();
   });
   win.on("close", (event) => {
-    const s = sessions.get(win.webContents.id);
+    const s = sessions.get(contentsId);
     if (s?.mustAnswer) {
       event.preventDefault(); // the user has to pick one; there is no safe silent default
       win.focus();
     }
   });
   win.on("closed", () => {
-    const s = sessions.get(win.webContents.id);
-    sessions.delete(win.webContents.id);
+    const s = sessions.get(contentsId);
+    sessions.delete(contentsId);
     s?.onClosed?.();
   });
   win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
@@ -263,9 +266,18 @@ export function openSettings(parent?: BrowserWindow | null): BrowserWindow {
   return settingsWindow;
 }
 
+/**
+ * Where backups are written right now. Asked at the moment of use, exactly like the backup manager
+ * does, so a Documents folder that Windows or OneDrive moved later is still the one that opens.
+ */
+export function currentBackupsDir(): string {
+  return join(app.getPath("documents"), "PokeRogue Backups");
+}
+
 export function openBackupsFolder(): void {
   const c = need();
-  const dir = c.settings.get().backupsDir;
+  const dir = currentBackupsDir();
+  mkdirSync(dir, { recursive: true });
   void shell.openPath(dir).then(
     (err) => {
       if (err) c.log.warn("could not open the backups folder", { dir, error: err });

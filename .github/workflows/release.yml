@@ -4,8 +4,9 @@
 # Release tag:  release-<upstream game tag>-app<app version>, e.g. release-v1.12.0.11-app0.1.0
 # Assets:       PokeRogue-Setup.exe, PokeRogue-Setup.exe.sha256, release.json {gameTag, appVersion}
 #
-# A new release happens when upstream PokeRogue publishes a new tag (checked every 4 hours) or when
-# app/package.json gets a new version and the workflow is run by hand.
+# Two jobs on purpose. `build` runs upstream PokeRogue's own build (pnpm install, vite) and therefore
+# gets a read-only token that is not even kept in the checkout. Only `publish`, which runs no
+# third-party code, can write releases.
 name: Release
 
 on:
@@ -23,23 +24,33 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   UPSTREAM_REPO: pagefaultgames/pokerogue
-  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-  GH_REPO: ${{ github.repository }}
 
 jobs:
-  release:
+  build:
     runs-on: windows-latest
     timeout-minutes: 120
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      app: ${{ steps.resolve.outputs.app }}
+      rel: ${{ steps.resolve.outputs.rel }}
+      skip: ${{ steps.resolve.outputs.skip }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Resolve versions
         id: resolve
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           $tag = '${{ inputs.tag }}'
           if (-not $tag) { $tag = gh api "repos/$env:UPSTREAM_REPO/releases/latest" --jq '.tag_name' }
@@ -50,8 +61,7 @@ jobs:
           $exists = $LASTEXITCODE -eq 0
           $global:LASTEXITCODE = 0
           $skip = $exists -and ('${{ github.event_name }}' -eq 'schedule')
-          if ($exists -and -not $skip) { gh release delete $rel --yes --cleanup-tag }
-          Write-Host "game $tag, app $appVersion, release $rel, skip=$skip"
+          Write-Host "game $tag, app $appVersion, release $rel, exists=$exists, skip=$skip"
           "tag=$tag" >> $env:GITHUB_OUTPUT
           "app=$appVersion" >> $env:GITHUB_OUTPUT
           "rel=$rel" >> $env:GITHUB_OUTPUT
@@ -72,6 +82,11 @@ jobs:
         shell: powershell
         run: ./game-build/build-game.ps1 -Tag '${{ steps.resolve.outputs.tag }}' -NoZip
 
+      - name: Check the game calls no unreviewed server routes
+        if: steps.resolve.outputs.skip != 'true'
+        shell: pwsh
+        run: node game-build/check-api-routes.mjs game-build/work/pokerogue
+
       - name: Test and build installer
         if: steps.resolve.outputs.skip != 'true'
         shell: pwsh
@@ -83,25 +98,50 @@ jobs:
           npm run dist
           if (-not (Test-Path release/PokeRogue-Setup.exe)) { throw "installer missing" }
 
-      - name: Package release files
+      - uses: actions/upload-artifact@v4
         if: steps.resolve.outputs.skip != 'true'
+        with:
+          name: installer
+          path: app/release/PokeRogue-Setup.exe
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: build
+    if: needs.build.outputs.skip != 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: installer
+          path: out
+
+      - name: Package release files
         shell: pwsh
-        working-directory: app/release
+        working-directory: out
         run: |
           $hash = (Get-FileHash PokeRogue-Setup.exe -Algorithm SHA256).Hash.ToLower()
           "$hash  PokeRogue-Setup.exe" | Set-Content -NoNewline -Encoding ascii PokeRogue-Setup.exe.sha256
-          @{ gameTag = '${{ steps.resolve.outputs.tag }}'; appVersion = '${{ steps.resolve.outputs.app }}' } |
+          @{ gameTag = '${{ needs.build.outputs.tag }}'; appVersion = '${{ needs.build.outputs.app }}' } |
             ConvertTo-Json | Set-Content -Encoding utf8NoBOM release.json
-          Get-ChildItem PokeRogue-Setup.exe, PokeRogue-Setup.exe.sha256, release.json | Format-Table Name, Length
+          Get-ChildItem | Format-Table Name, Length
 
       - name: Publish
-        if: steps.resolve.outputs.skip != 'true'
         shell: pwsh
-        working-directory: app/release
+        working-directory: out
         run: |
-          $rel = '${{ steps.resolve.outputs.rel }}'
+          $rel = '${{ needs.build.outputs.rel }}'
+          gh release view $rel *> $null
+          if ($LASTEXITCODE -eq 0) { gh release delete $rel --yes --cleanup-tag }
+          $global:LASTEXITCODE = 0
           gh release create $rel PokeRogue-Setup.exe PokeRogue-Setup.exe.sha256 release.json `
-            --title "PokeRogue ${{ steps.resolve.outputs.tag }} (App ${{ steps.resolve.outputs.app }})" `
+            --title "PokeRogue ${{ needs.build.outputs.tag }} (App ${{ needs.build.outputs.app }})" `
             --notes "Kompletter Installer. Die installierte App aktualisiert sich damit von selbst."
           # Keep the three newest releases.
           $old = gh release list --limit 50 --json tagName,createdAt | ConvertFrom-Json |

@@ -52,6 +52,7 @@ export interface StateRecord {
   clientSessionId: string;
   lastSyncAt: string | null;
   lastSyncResult: string | null;
+  lastSuccessfulSyncAt: string | null;
   gameVersionServed: string | null;
 }
 
@@ -317,6 +318,7 @@ export class Mirror {
       clientSessionId: typeof obj.clientSessionId === "string" ? obj.clientSessionId : "",
       lastSyncAt: typeof obj.lastSyncAt === "string" ? obj.lastSyncAt : null,
       lastSyncResult: typeof obj.lastSyncResult === "string" ? obj.lastSyncResult : null,
+      lastSuccessfulSyncAt: typeof obj.lastSuccessfulSyncAt === "string" ? obj.lastSuccessfulSyncAt : null,
       gameVersionServed: typeof obj.gameVersionServed === "string" ? obj.gameVersionServed : null,
     };
   }
@@ -356,6 +358,33 @@ export class Mirror {
 
   private allSlots(): number[] {
     return Array.from({ length: SESSION_SLOTS }, (_v, i) => i);
+  }
+
+  /** True while anything on this computer has not been saved online yet. */
+  hasUnsynced(): boolean {
+    if (this.readSystem().dirty) return true;
+    for (let n = 0; n < 5; n++) {
+      const rec = this.readSession(n);
+      if (rec.dirty || (typeof rec.clearedAt === "string" && rec.clearedAt.length > 0)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Another account logged in on this computer. The saves in the mirror belong to the previous
+   * account, so they are moved (never deleted) to `other-accounts/<user>-<time>/` and the mirror
+   * starts empty for the new one. Without this, the next sync would treat the old account's saves
+   * as the new account's local progress and upload them into it.
+   */
+  archiveSavesOf(previousUsername: string): string | null {
+    const files = [this.systemFile(), ...[0, 1, 2, 3, 4].map((n) => this.sessionFile(n))].filter((f) => fs.existsSync(f));
+    if (files.length === 0) return null;
+    const safe = previousUsername.replace(/[^\w-]/g, "_") || "unknown";
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const target = path.join(this.dir, "other-accounts", `${safe}-${stamp}`);
+    fs.mkdirSync(target, { recursive: true });
+    for (const file of files) fs.renameSync(file, path.join(target, path.basename(file)));
+    return target;
   }
 
   private systemFile(): string {
@@ -409,15 +438,22 @@ export class Mirror {
 
   /** null = absent or unusable (unusable files are quarantined first). */
   private readJson(file: string): unknown {
-    let text: string;
-    try {
-      text = fs.readFileSync(file, "utf8");
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-        return null;
+    let text = "";
+    for (let attempt = 0; ; attempt++) {
+      try {
+        text = fs.readFileSync(file, "utf8");
+        break;
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+          return null;
+        }
+        // Locked by a virus scanner, a backup tool or OneDrive for a moment: wait and try again.
+        // Never quarantine on an I/O error - that would make a good save look like no save at all.
+        if (attempt >= 4) {
+          throw err;
+        }
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50 * (attempt + 1));
       }
-      this.quarantine(file);
-      return null;
     }
     if (text.trim() === "") {
       this.quarantine(file);

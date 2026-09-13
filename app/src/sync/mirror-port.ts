@@ -50,6 +50,8 @@ export interface MirrorStateRecord {
   clientSessionId: string;
   lastSyncAt: string | null;
   lastSyncResult: string | null;
+  /** When a sync last finished without errors. Only this is shown as "Zuletzt online gespeichert". */
+  lastSuccessfulSyncAt?: string | null;
   gameVersionServed: string | null;
 }
 

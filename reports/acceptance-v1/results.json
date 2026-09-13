@@ -1,17 +1,17 @@
 {
   "before": {
-    "playTime": 593,
-    "wave": 4,
+    "playTime": 893,
+    "wave": 6,
     "seed": "AHnTxiM4147tgUEzbADQ0vKV"
   },
   "target": {
-    "playTime": 893,
-    "wave": 6,
+    "playTime": 1193,
+    "wave": 8,
     "seed": "AHnTxiM4147tgUEzbADQ0vKV"
   },
   "after": {
-    "playTime": 893,
-    "wave": 6,
+    "playTime": 1193,
+    "wave": 8,
     "seed": "AHnTxiM4147tgUEzbADQ0vKV"
   },
   "results": [
@@ -58,7 +58,7 @@
     {
       "name": "offline reload shows offline progress",
       "ok": true,
-      "detail": "playTime 893 wave 6"
+      "detail": "playTime 1193 wave 8"
     },
     {
       "name": "mirror marks both as not yet online",
@@ -66,24 +66,29 @@
       "detail": ""
     },
     {
+      "name": "game loading right after reconnect gets the offline progress",
+      "ok": true,
+      "detail": "playTime 1193"
+    },
+    {
       "name": "app saved online by itself after reconnect",
       "ok": true,
-      "detail": "12.1 s after the switch was removed"
+      "detail": "9.0 s after the switch was removed"
     },
     {
       "name": "server has the offline play time",
       "ok": true,
-      "detail": "593 -> 893"
+      "detail": "893 -> 1193"
     },
     {
       "name": "server has the offline wave",
       "ok": true,
-      "detail": "4 -> 6"
+      "detail": "6 -> 8"
     },
     {
       "name": "backup files written during the sync",
       "ok": true,
-      "detail": "152232-update-system.prsv, 152234-update-session0.prsv"
+      "detail": "171716-sync-system.prsv, 171718-sync-session0.prsv"
     }
   ]
 }

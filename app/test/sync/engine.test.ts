@@ -148,9 +148,9 @@ describe("fast-forward push", () => {
     const r = rig({ mirror: { system: { base: BASE_SYSTEM, local } }, api: { system: BASE_SYSTEM } });
     await runSync(r.deps);
 
-    order(r.log, "backup.system.update", "api.updateSystem");
+    order(r.log, "backup.system.sync", "api.updateSystem");
     expect(r.backup.written).toHaveLength(1);
-    expect(r.backup.written[0]).toMatchObject({ kind: "system", slot: null, reason: "update" });
+    expect(r.backup.written[0]).toMatchObject({ kind: "system", slot: null, reason: "sync" });
     expect(systemEquals(r.backup.written[0]!.save as SystemSave, BASE_SYSTEM)).toBe(true);
   });
 
@@ -197,8 +197,8 @@ describe("pull", () => {
     expect(res.pulled).toEqual(["system"]);
     expect(systemEquals(r.mirror.readSystem().local, remote)).toBe(true);
     expect(r.mirror.readSystem().dirty).toBe(false);
-    order(r.log, "backup.system.update", "mirror.writeLocalSystem");
-    expect(r.backup.written[0]).toMatchObject({ kind: "system", reason: "update" });
+    order(r.log, "backup.system.sync", "mirror.writeLocalSystem");
+    expect(r.backup.written[0]).toMatchObject({ kind: "system", reason: "sync" });
     expect(res.summary).toBe("The progress you made elsewhere was brought over to this computer.");
   });
 
@@ -217,7 +217,7 @@ describe("pull", () => {
     });
     const res = await runSync(r.deps);
     expect(res.pulled).toEqual(["session0"]);
-    order(r.log, "backup.session0.update", "mirror.deleteLocalSession0");
+    order(r.log, "backup.session0.sync", "mirror.deleteLocalSession0");
     expect(r.mirror.readSession(0).local).toBeNull();
     expect(r.mirror.readSession(0).base).toBeNull();
   });
@@ -528,9 +528,9 @@ describe("propagating a run finished offline (DESIGN.md §3.8, amended)", () => 
     expect(res.errors).toEqual([]);
     expect(r.api.countOf("deleteSession0")).toBe(1);
     // Invariant §4.1: the backup is written first, and it holds the server's copy.
-    order(r.log, "backup.session0.update", "api.deleteSession0");
+    order(r.log, "backup.session0.sync", "api.deleteSession0");
     expect(r.backup.written).toHaveLength(1);
-    expect(r.backup.written[0]).toMatchObject({ kind: "session", slot: 0, reason: "update" });
+    expect(r.backup.written[0]).toMatchObject({ kind: "session", slot: 0, reason: "sync" });
     expect(r.backup.written[0]!.save).toMatchObject({ seed: BASE_SESSION.seed });
     // and the slot is settled: nothing local, nothing online, no leftover clear marker.
     expect(r.api.sessions[0]).toBeNull();
@@ -741,7 +741,7 @@ describe("sessions", () => {
     const res = await runSync(r.deps);
     expect(res.pushed).toEqual(["session0"]);
     expect(r.api.countOf("getSession0")).toBe(3); // decide, re-check, read back
-    order(r.log, "backup.session0.update", "api.updateSession0");
+    order(r.log, "backup.session0.sync", "api.updateSession0");
   });
 
   it("handles all five slots independently", async () => {
@@ -967,7 +967,7 @@ describe("the server's lossy echo of our own save is not a remote change (B2)", 
     expect(res.pulled).toEqual(["session0"]);
     // and the local copy is exported before it is replaced (Invariant §4.1).
     expect(r.backup.written).toHaveLength(1);
-    order(r.log, "backup.session0.update", "mirror.writeLocalSession0");
+    order(r.log, "backup.session0.sync", "mirror.writeLocalSession0");
   });
 
   it("a remote that has lost a critical field is not treated as an echo", async () => {
@@ -994,5 +994,49 @@ describe("the server's lossy echo of our own save is not a remote change (B2)", 
     expect(res.pulled).toEqual([]);
     expect(res.pushed).toEqual([]);
     expect(r.backup.written).toEqual([]);
+  });
+});
+
+describe("the game saves while a sync is running (code review 2026-09-13)", () => {
+  it("does not push a system save the game has replaced since the decision", async () => {
+    const r = rig({
+      mirror: { system: { base: BASE_SYSTEM, local: advanceSystem(BASE_SYSTEM, 60) } },
+      api: { system: BASE_SYSTEM },
+    });
+    const newer = advanceSystem(BASE_SYSTEM, 120);
+    r.api.onGetSession = (slot, ctx) => {
+      if (slot === 0 && ctx.call === 1) r.mirror.writeLocalSystem(newer);
+      return null;
+    };
+    const res = await runSync(r.deps);
+    expect(r.api.countOf("updateSystem")).toBe(0);
+    expect(res.errors).toEqual([]);
+    expect(res.unrecoverable).toEqual([]);
+    expect(systemEquals(r.mirror.readSystem().local, newer)).toBe(true);
+  });
+
+  it("does not replace a system save the game wrote after the decision to pull", async () => {
+    const r = rig({
+      mirror: { system: { base: BASE_SYSTEM, local: BASE_SYSTEM } },
+      api: { system: advanceSystem(BASE_SYSTEM, 60) },
+    });
+    const newer = advanceSystem(BASE_SYSTEM, 300);
+    r.api.onGetSession = (slot, ctx) => {
+      if (slot === 0 && ctx.call === 1) r.mirror.writeLocalSystem(newer);
+      return null;
+    };
+    const res = await runSync(r.deps);
+    expect(res.pulled).toEqual([]);
+    expect(systemEquals(r.mirror.readSystem().local, newer)).toBe(true);
+  });
+
+  it("does not remove a finished run online when a new run appeared in the slot meanwhile", async () => {
+    const cleared = { base: BASE_SESSION, local: null, clearedAt: "2026-09-12T10:00:00.000Z" };
+    const r = rig({ mirror: { sessions: [cleared] }, api: { sessions: [BASE_SESSION] } });
+    const newRun = makeSession({ seed: "NEWRUNONLINE1" });
+    r.api.onGetSession = (slot, ctx) => (slot === 0 && ctx.call === 2 ? { ok: true, status: 200, data: newRun } : null);
+    const res = await runSync(r.deps);
+    expect(r.api.countOf("deleteSession0")).toBe(0);
+    expect(res.pushed).toEqual([]);
   });
 });
