@@ -95,12 +95,4 @@ game's localStorage keys).
 
 ## CI
 
-`.github/workflows/build-game.yml` in this repository does the same thing on Ubuntu:
-
-- **`workflow_dispatch`** with a `tag` input (defaults to the pinned tag) — always builds.
-- **Daily schedule** — resolves the newest upstream `v*` release tag and builds it only if a
-  `game-<tag>` release does not already exist.
-
-It publishes `game.zip`, `game.zip.sha256` and `version.json`
-(`{tag, upstreamSha, gameVersion, builtAt}`) to a release named `game-<tag>` in
-`m0stey/pokerogue-offline`, and prunes all but the newest 3 `game-*` releases.
+`.github/workflows/release.yml` runs this script on `windows-latest` with `-NoZip`, builds the app installer with the game inside, and publishes `PokeRogue-Setup.exe`, its `.sha256` and `release.json` as release `release-<tag>-app<appVersion>`. It runs every 4 hours (skipping versions already released) and on manual dispatch, and keeps the newest 3 releases. The zip output of this script is only for local experiments.

@@ -88,6 +88,17 @@ expected (BRIEF.md) and is the reason the installer should be handed over direct
 downloaded from somewhere the user found on their own. An unsigned installer cannot prove it came from us, so
 whoever hands it over is the trust anchor.
 
+## Automatic updates
+
+The app downloads new installers by itself from the GitHub releases of `m0stey/pokerogue-offline`.
+Safeguards: downloads only over https from `github.com` / `githubusercontent.com` (redirects
+elsewhere are refused), the file must match the SHA-256 and size published in the same release, and
+a version is never downgraded. The installer runs silently without admin rights (per-user install).
+
+What this does not protect against: whoever controls the GitHub account or repository can publish a
+release the app will install, because checksum and installer come from the same place. Protect the
+GitHub account with two-factor authentication.
+
 ## Reporting
 
 This is a two-person project; there is no security contact and no disclosure process. If something

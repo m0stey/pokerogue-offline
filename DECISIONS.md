@@ -80,3 +80,11 @@ a usable version for the user that's stable and secure"), the following was deci
 - Offline round trip verified against the real server with throwaway account 2: offline play time and wave pushed automatically 12 s after reconnect, verified backups written first. Details: reports/acceptance-v1.md.
 - End-user guide in German: docs/ANLEITUNG.md.
 - Screenshots of the developer's desktop are never committed; they stay in scratch/.
+
+## 2026-09-13 — automatic updates back in (owner request)
+- The notice-only updater caused friction. Now: on every start (and every 6 h) the app checks GitHub releases; if newer, it downloads the complete installer at once with a progress window, verifies SHA-256 and size, and installs silently on restart or close, then starts again. Saves are outside the program folder.
+- No metered-connection question any more; the owner chose automatic download with a popup. The download can be hidden while playing, and a failed download retries on the next start.
+- Releases are built by .github/workflows/release.yml on windows-latest every 4 hours from the newest upstream tag: `release-<gameTag>-app<appVersion>` with PokeRogue-Setup.exe, .sha256, release.json. The old game.zip workflow is gone.
+- Silent reinstall with relaunch verified on this machine: app closed after saving online, installer ran with /S --updated --force-run, app restarted by itself, save files unchanged.
+- The owner-name constant is gone; no message tells the user to ask anyone for updates.
+- docs/ANLEITUNG.md replaced by docs/EINRICHTUNG.md, a one-time setup checklist for the owner to go through with the user.

@@ -1,69 +1,109 @@
-// Tells us when a newer game build has been published. That is all it does.
+// Keeps the app and the game up to date by itself.
 //
-// It used to download, verify, unpack and swap in new game files. That was cut on 2026-09-13
-// (DECISIONS.md, the scope trim): for one user on one laptop, a ~600 MB self-update is a lot of
-// moving parts — staging folders, resumable downloads, checksum handling, a rename dance at
-// startup, a "previous" copy to roll back to — guarding a path that had never once run for real.
-// Every one of those parts can leave the game files broken, which is the one thing that must not
-// happen. A new version now arrives the same way the first one did: a new installer, run once.
+// On every start (and every six hours while online) the app compares its own version with the
+// newest release on GitHub. If the release is newer, it downloads it straight away and shows a small
+// window with the progress; the user can keep playing meanwhile. When the download is verified, one click
+// restarts PokeRogue into the new version (closing the game does the same).
 //
-// So what is left is a notice. At most one look at the release feed every six hours, only while
-// online, and if there is something newer than what we serve, one plain German message telling the user
-// to ask for the new installation. Nothing is downloaded and nothing on disk is touched.
+// One mechanism for everything: every release carries a complete installer (app + game). Updating
+// means downloading that installer, checking it against its published SHA-256, and running it
+// silently after the app has closed. The installer replaces the program folder only; saves, backups
+// and settings live in %APPDATA% and Documents and are never touched. If the download breaks,
+// nothing on disk changes at all.
 
-import { join } from "node:path";
+import { createHash } from "node:crypto";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, rmSync, statSync } from "node:fs";
 import { get as httpsGet } from "node:https";
 import type { IncomingMessage } from "node:http";
+import { spawn } from "node:child_process";
+import { join } from "node:path";
 import type { Logger } from "../common/log";
 import { compareGameVersion } from "../common/version";
 import type { Connectivity } from "./contracts";
 import { readJsonSafe, writeJsonAtomic } from "./settings";
 
-/**
- * GitHub repository that publishes the game builds (decided 2026-09-12).
- * Releases are named `game-<tag>`, e.g. `game-v1.12.0.11`.
- */
+/** GitHub repository that publishes the releases (decided 2026-09-12). */
 export const UPDATE_REPO = "m0stey/pokerogue-offline";
 
-const CHECK_EVERY_MS = 6 * 60 * 60 * 1000; // 6 hours
-const TIMER_TICK_MS = 30 * 60 * 1000; // look at the clock every 30 min
-const USER_AGENT = `PokeRogueOffline/0.1 (+https://github.com/${UPDATE_REPO})`;
-const NET_TIMEOUT_MS = 30_000;
+/** Asset names every release must carry (see .github/workflows/release.yml). */
+export const INSTALLER_ASSET = "PokeRogue-Setup.exe";
+export const CHECKSUM_ASSET = "PokeRogue-Setup.exe.sha256";
+export const RELEASE_INFO_ASSET = "release.json";
 
-interface UpdateState {
-  lastCheckAt: number;
+const CHECK_EVERY_MS = 6 * 60 * 60 * 1000;
+const TIMER_TICK_MS = 10 * 60 * 1000;
+const NET_TIMEOUT_MS = 60_000;
+const USER_AGENT = `PokeRogueOffline (+https://github.com/${UPDATE_REPO})`;
+const MIN_INSTALLER_BYTES = 50 * 1024 * 1024;
+/** Downloads may only come from GitHub. Redirects anywhere else are refused. */
+const ALLOWED_HOSTS = [/^github\.com$/, /^api\.github\.com$/, /(^|\.)githubusercontent\.com$/];
+
+export interface ReleaseInfo {
+  gameTag: string;
+  appVersion: string;
 }
 
-const EMPTY_STATE: UpdateState = { lastCheckAt: 0 };
+export interface AvailableUpdate extends ReleaseInfo {
+  releaseTag: string;
+  installerUrl: string;
+  checksumUrl: string;
+  sizeBytes: number;
+}
+
+export interface InstalledVersion {
+  gameTag: string | null;
+  appVersion: string;
+}
+
+export type StreamOpener = (url: string) => Promise<IncomingMessage>;
 
 export interface UpdaterDeps {
   userDataDir: string;
   log: Logger;
   connectivity: Connectivity;
-  /** The release tag we are serving right now (from version.json), or null when unknown. */
-  installedTag: () => string | null;
-  /** Show the "there is a new version, ask for the new installation" notice. At most once. */
-  onNewerVersion: (info: { latestTag: string; installedTag: string }) => void;
-  /** Only for tests: skip the real network. */
+  installed: () => InstalledVersion;
+  /** A newer release exists. Called at most once per app start. */
+  onUpdateAvailable: (update: AvailableUpdate) => void;
+  /** Only for tests. */
   fetchJson?: (url: string) => Promise<unknown>;
+  fetchText?: (url: string) => Promise<string>;
+  openStream?: StreamOpener;
+  now?: () => number;
+}
+
+interface UpdateState {
+  lastCheckAt: number;
 }
 
 export class Updater {
   private readonly stateFile: string;
+  private readonly updatesDir: string;
   private state: UpdateState;
   private timer: NodeJS.Timeout | null = null;
-  private running = false;
+  private checking = false;
+  /** The first successful look after start happens regardless of when the last one was. */
+  private checkedThisRun = false;
+  private announced = false;
+  private downloading: Promise<string> | null = null;
+  private ready: string | null = null;
 
   constructor(private readonly deps: UpdaterDeps) {
     this.stateFile = join(deps.userDataDir, "update-state.json");
-    this.state = { ...EMPTY_STATE, ...readJsonSafe<Partial<UpdateState>>(this.stateFile, {}) };
+    this.updatesDir = join(deps.userDataDir, "updates");
+    this.state = { lastCheckAt: 0, ...readJsonSafe<Partial<UpdateState>>(this.stateFile, {}) };
   }
 
+  private now(): number {
+    return this.deps.now ? this.deps.now() : Date.now();
+  }
+
+  /** Checks right away (on start, when online) and then every six hours. */
   start(): void {
     if (this.timer) return;
+    this.cleanupOldDownloads();
     this.timer = setInterval(() => void this.maybeCheck("timer"), TIMER_TICK_MS);
-    if (this.timer.unref) this.timer.unref();
-    void this.maybeCheck("startup");
+    this.timer.unref?.();
+    void this.checkNow("startup");
   }
 
   stop(): void {
@@ -71,46 +111,140 @@ export class Updater {
     this.timer = null;
   }
 
-  /** Respects the six hour spacing and the online state. */
-  async maybeCheck(reason: string): Promise<void> {
-    if (this.deps.connectivity.state !== "online") return;
-    if (Date.now() - this.state.lastCheckAt < CHECK_EVERY_MS) return;
-    await this.checkNow(reason);
+  /** Respects the six hour spacing. Used by the timer and when the connection comes back. */
+  async maybeCheck(reason: string): Promise<AvailableUpdate | null> {
+    if (this.checkedThisRun && this.now() - this.state.lastCheckAt < CHECK_EVERY_MS) return null;
+    return this.checkNow(reason);
   }
 
-  /** Ignores the six hour spacing. */
-  async checkNow(reason: string): Promise<void> {
-    if (this.running) return;
-    if (this.deps.connectivity.state !== "online") return;
-    this.running = true;
+  async checkNow(reason: string): Promise<AvailableUpdate | null> {
+    if (this.checking || this.announced || this.deps.connectivity.state !== "online") return null;
+    this.checking = true;
+    this.checkedThisRun = true;
     try {
-      // Written before the check runs, so a failing check uses up its slot instead of looping.
-      this.patch({ lastCheckAt: Date.now() });
-      const latest = await this.latestTag();
-      const installed = this.deps.installedTag();
-      this.deps.log.info("looked for a game update", { reason, latest, installed });
-      if (!latest || !installed) return;
-      if (compareTags(latest, installed) !== 1) return;
-      this.deps.onNewerVersion({ latestTag: latest, installedTag: installed });
+      this.patch({ lastCheckAt: this.now() });
+      const update = await this.findUpdate();
+      this.deps.log.info("looked for an update", { reason, found: update?.releaseTag ?? null, installed: this.deps.installed() });
+      if (update && !this.announced) {
+        this.announced = true;
+        this.deps.onUpdateAvailable(update);
+      }
+      return update;
     } catch (err) {
       // A feed we cannot read is never worth a message: the user just keeps playing.
       this.deps.log.warn("the update check did not work", { reason, error: String(err) });
+      return null;
     } finally {
-      this.running = false;
+      this.checking = false;
     }
   }
 
-  private async latestTag(): Promise<string | null> {
-    const url = `https://api.github.com/repos/${UPDATE_REPO}/releases?per_page=20`;
-    const fetcher = this.deps.fetchJson ?? fetchJson;
-    const releases = (await fetcher(url)) as GithubRelease[] | null;
-    if (!Array.isArray(releases)) return null;
-    for (const r of releases) {
-      if (r.draft || r.prerelease) continue;
-      const tag = gameTag(r);
-      if (tag) return tag;
+  async findUpdate(): Promise<AvailableUpdate | null> {
+    const getJson = this.deps.fetchJson ?? fetchJson;
+    const candidate = pickRelease(await getJson(`https://api.github.com/repos/${UPDATE_REPO}/releases?per_page=10`));
+    if (!candidate) return null;
+    const info = parseReleaseInfo(await getJson(candidate.infoUrl));
+    if (!info || !isNewer(info, this.deps.installed())) return null;
+    return { ...info, ...candidate };
+  }
+
+  /** Downloads and verifies the installer; resolves with its path. Calling it twice is harmless. */
+  download(update: AvailableUpdate, onProgress?: (fraction: number) => void): Promise<string> {
+    if (this.ready) return Promise.resolve(this.ready);
+    if (!this.downloading) {
+      this.downloading = this.doDownload(update, onProgress)
+        .then((file) => (this.ready = file))
+        .finally(() => (this.downloading = null));
     }
-    return null;
+    return this.downloading;
+  }
+
+  /** True once a newer release was found and handed to onUpdateAvailable. */
+  get updateFound(): boolean {
+    return this.announced;
+  }
+
+  /** Path of a verified installer waiting to be run, if any. */
+  get readyInstaller(): string | null {
+    return this.ready;
+  }
+
+  private async doDownload(update: AvailableUpdate, onProgress?: (fraction: number) => void): Promise<string> {
+    mkdirSync(this.updatesDir, { recursive: true });
+    const expected = parseChecksum(await (this.deps.fetchText ?? fetchText)(update.checksumUrl));
+    if (!expected) throw new Error("the release has no usable checksum");
+
+    const final = join(this.updatesDir, `PokeRogue-Setup-${update.releaseTag.replace(/[^\w.-]/g, "_")}.exe`);
+    if (existsSync(final) && (await sha256File(final)) === expected) return final;
+
+    const part = `${final}.part`;
+    rmSync(part, { force: true });
+    const res = await (this.deps.openStream ?? openStream)(update.installerUrl);
+    if ((res.statusCode ?? 0) !== 200) {
+      res.resume();
+      throw new Error(`download failed with status ${res.statusCode}`);
+    }
+    const total = Number(res.headers["content-length"]) || update.sizeBytes || 0;
+    const hash = createHash("sha256");
+    let received = 0;
+    let lastPct = -1;
+    await new Promise<void>((resolve, reject) => {
+      const out = createWriteStream(part);
+      res.on("data", (chunk: Buffer) => {
+        hash.update(chunk);
+        received += chunk.length;
+        const pct = total > 0 ? Math.floor((received / total) * 100) : -1;
+        if (onProgress && pct !== lastPct) {
+          lastPct = pct;
+          onProgress(Math.min(1, received / total));
+        }
+      });
+      res.on("error", reject);
+      res.on("aborted", () => reject(new Error("the download was interrupted")));
+      out.on("error", reject);
+      out.on("finish", resolve);
+      res.pipe(out);
+    });
+    const actual = hash.digest("hex");
+    if (received < MIN_INSTALLER_BYTES || (total > 0 && received !== total) || actual !== expected) {
+      rmSync(part, { force: true });
+      throw new Error(`the downloaded installer failed verification (bytes ${received}/${total})`);
+    }
+    renameSync(part, final);
+    this.deps.log.info("update downloaded and verified", { file: final, bytes: received });
+    return final;
+  }
+
+  /**
+   * Arranges for the installer to run once this process has exited: a hidden PowerShell waits for
+   * our PID, then starts the installer silently; `--force-run` starts PokeRogue again afterwards.
+   * The caller quits the app right after (which still saves online first).
+   */
+  launchInstallerAfterExit(installer: string): void {
+    const quoted = installer.replace(/'/g, "''");
+    const script =
+      `Wait-Process -Id ${process.pid} -Timeout 180 -ErrorAction SilentlyContinue; ` +
+      `Start-Process -FilePath '${quoted}' -ArgumentList '/S','--updated','--force-run'`;
+    const child = spawn("powershell.exe", ["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script], {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.unref();
+    this.deps.log.info("the installer will run after the app closes", { installer });
+  }
+
+  private cleanupOldDownloads(): void {
+    try {
+      if (!existsSync(this.updatesDir)) return;
+      for (const name of readdirSync(this.updatesDir)) {
+        const file = join(this.updatesDir, name);
+        const old = this.now() - statSync(file).mtimeMs > 7 * 24 * 60 * 60 * 1000;
+        if (name.endsWith(".part") || old) rmSync(file, { force: true });
+      }
+    } catch (err) {
+      this.deps.log.warn("could not tidy old update downloads", { error: String(err) });
+    }
   }
 
   private patch(patch: Partial<UpdateState>): void {
@@ -124,50 +258,103 @@ export class Updater {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers (exported so tests can reach them without an Electron app)
+// Pure helpers (exported for tests)
 // ---------------------------------------------------------------------------
 
+interface GithubAsset {
+  name?: string;
+  browser_download_url?: string;
+  size?: number;
+}
 interface GithubRelease {
-  name?: string | null;
-  tag_name?: string | null;
+  tag_name?: string;
   draft?: boolean;
   prerelease?: boolean;
+  assets?: GithubAsset[];
 }
 
-/** Releases are named `game-<tag>`; the tag is what version.json carries. */
-export function gameTag(release: { name?: string | null; tag_name?: string | null }): string | null {
-  for (const candidate of [release.tag_name, release.name]) {
-    if (typeof candidate === "string" && candidate.startsWith("game-")) {
-      const tag = candidate.slice("game-".length).trim();
-      if (tag) return tag;
-    }
+/** The newest published release that carries all three assets. */
+export function pickRelease(
+  releases: unknown,
+): { releaseTag: string; installerUrl: string; checksumUrl: string; infoUrl: string; sizeBytes: number } | null {
+  if (!Array.isArray(releases)) return null;
+  for (const r of releases as GithubRelease[]) {
+    if (!r || r.draft || r.prerelease || typeof r.tag_name !== "string") continue;
+    const url = (name: string): string | null => {
+      const a = r.assets?.find((x) => x.name === name);
+      return a && typeof a.browser_download_url === "string" && isAllowedDownloadUrl(a.browser_download_url)
+        ? a.browser_download_url
+        : null;
+    };
+    const installerUrl = url(INSTALLER_ASSET);
+    const checksumUrl = url(CHECKSUM_ASSET);
+    const infoUrl = url(RELEASE_INFO_ASSET);
+    if (!installerUrl || !checksumUrl || !infoUrl) continue;
+    const size = r.assets?.find((x) => x.name === INSTALLER_ASSET)?.size;
+    return { releaseTag: r.tag_name, installerUrl, checksumUrl, infoUrl, sizeBytes: typeof size === "number" ? size : 0 };
   }
   return null;
 }
 
+export function parseReleaseInfo(raw: unknown): ReleaseInfo | null {
+  if (!raw || typeof raw !== "object") return null;
+  const { gameTag, appVersion } = raw as Record<string, unknown>;
+  if (typeof gameTag !== "string" || typeof appVersion !== "string") return null;
+  if (compareTags(gameTag, gameTag) === null || compareTags(appVersion, appVersion) === null) return null;
+  return { gameTag, appVersion };
+}
+
 /**
- * Compare two release tags (`v1.12.0.11`) with the same rule the game server uses for versions.
- * Returns -1/0/1, or `null` when either side is not a plain `x.y.z[.w]` — in which case the caller
- * must say nothing, because a wrong "there is a new version" message sends the user looking for an
- * installer that does not exist.
+ * Newer game wins; with the same game, a newer app wins. Never downgrades, and anything that does
+ * not parse as a version counts as "not newer" so a broken feed can never trigger a download.
  */
+export function isNewer(release: ReleaseInfo, installed: InstalledVersion): boolean {
+  if (installed.gameTag) {
+    const game = compareTags(release.gameTag, installed.gameTag);
+    if (game === null) return false;
+    if (game !== 0) return game === 1;
+  }
+  return compareTags(release.appVersion, installed.appVersion) === 1;
+}
+
+/** `v1.12.0.11` vs `1.12.0.12`, same rule as the game server. `null` when either is not a version. */
 export function compareTags(a: string, b: string): number | null {
-  const strip = (t: string): string => (t.startsWith("v") || t.startsWith("V") ? t.slice(1) : t);
-  return compareGameVersion(strip(a.trim()), strip(b.trim()));
+  const strip = (t: string): string => t.trim().replace(/^[vV]/, "");
+  return compareGameVersion(strip(a), strip(b));
+}
+
+/** Accepts `<hex>` or `<hex>  filename`, as written by sha256sum. */
+export function parseChecksum(text: string): string | null {
+  const match = /\b([a-fA-F0-9]{64})\b/.exec(text);
+  return match ? match[1]!.toLowerCase() : null;
+}
+
+export function isAllowedDownloadUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === "https:" && ALLOWED_HOSTS.some((re) => re.test(u.hostname));
+  } catch {
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Tiny HTTPS helper (Node built-ins only)
+// Network (Node built-ins only)
 // ---------------------------------------------------------------------------
 
-function httpsRequest(url: string, headers: Record<string, string>, redirects = 5): Promise<IncomingMessage> {
+export function openStream(url: string, redirects = 5): Promise<IncomingMessage> {
   return new Promise((resolve, reject) => {
-    const req = httpsGet(url, { headers: { "User-Agent": USER_AGENT, Accept: "*/*", ...headers } }, (res) => {
+    if (!isAllowedDownloadUrl(url)) {
+      reject(new Error(`refusing to download from ${url}`));
+      return;
+    }
+    const req = httpsGet(url, { headers: { "User-Agent": USER_AGENT, Accept: "*/*" } }, (res) => {
       const status = res.statusCode ?? 0;
       const location = res.headers.location;
-      if (status >= 300 && status < 400 && location && redirects > 0) {
+      if (status >= 300 && status < 400 && location) {
         res.resume();
-        httpsRequest(new URL(location, url).toString(), headers, redirects - 1).then(resolve, reject);
+        if (redirects <= 0) return reject(new Error("too many redirects"));
+        openStream(new URL(location, url).toString(), redirects - 1).then(resolve, reject);
         return;
       }
       resolve(res);
@@ -178,7 +365,7 @@ function httpsRequest(url: string, headers: Record<string, string>, redirects = 
 }
 
 export async function fetchText(url: string): Promise<string> {
-  const res = await httpsRequest(url, {});
+  const res = await openStream(url);
   if ((res.statusCode ?? 0) >= 400) {
     res.resume();
     throw new Error(`status ${res.statusCode} for ${url}`);
@@ -190,4 +377,10 @@ export async function fetchText(url: string): Promise<string> {
 
 export async function fetchJson(url: string): Promise<unknown> {
   return JSON.parse(await fetchText(url)) as unknown;
+}
+
+async function sha256File(file: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(file)) hash.update(chunk as Buffer);
+  return hash.digest("hex");
 }

@@ -12,12 +12,6 @@
 //     so it stays exactly that;
 //   * the app is called "PokéRogue" everywhere, with the accent, like the game itself.
 
-/**
- * Whose help the user should ask for when a new version is needed. One constant, on purpose: it is the
- * only name in the app, and it is the only thing to change if someone else takes this over.
- */
-export const OWNER_NAME = "Owner";
-
 export const APP_NAME = "PokéRogue";
 
 export const DE = {
@@ -89,16 +83,29 @@ export const DE = {
 
   /**
    * The game refuses to open an account whose save was written by a newer version of the game
-   * (reports/milestone-1.md §3). There is nothing we can do about it here, so the only honest thing
-   * is to say what happened, that nothing is lost, and who can fix it.
+   * (reports/milestone-1.md §3). The app looks for the new version at once; this is only shown when
+   * none has been published yet (the release pipeline builds one within a few hours).
    */
   needsGameUpdate: {
     message: `${APP_NAME} hat eine neue Version bekommen.`,
     detail:
       `Das passiert, wenn du ${APP_NAME} zwischendurch im Browser gespielt hast. ` +
       "Dein Spielstand ist vollständig, es geht nichts verloren. " +
-      `Damit du hier weiterspielen kannst, braucht dieser Computer die neue Version von ${APP_NAME}. ` +
-      `Bitte frag ${OWNER_NAME} danach.`,
+      "Die neue Version für diesen Computer wird gerade vorbereitet. " +
+      `Öffne ${APP_NAME} in ein paar Stunden noch einmal, dann wird sie automatisch geladen.`,
+    ok: "OK",
+  },
+
+  /** The small window shown while a new version downloads and when it is ready. */
+  update: {
+    title: `${APP_NAME} wird aktualisiert`,
+    downloading: "Eine neue Version wird geladen. Du kannst dabei weiterspielen.",
+    progress: (percent: number, mb: number): string => `${percent} % von ${mb} MB`,
+    hide: "Im Hintergrund laden",
+    ready: `Die neue Version ist bereit. ${APP_NAME} startet kurz neu, dein Spielstand wird vorher gespeichert.`,
+    restartNow: "Jetzt neu starten",
+    later: "Beim Schließen",
+    failed: "Die neue Version konnte gerade nicht geladen werden. Das wird beim nächsten Start noch einmal versucht.",
     ok: "OK",
   },
 

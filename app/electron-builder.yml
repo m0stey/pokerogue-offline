@@ -33,7 +33,8 @@ win:
     - nsis
   icon: build/icon.png
   signAndEditExecutable: false
-  artifactName: PokeRogue-Setup-${version}.exe
+  # Fixed name: the release workflow and the updater both look for exactly this file.
+  artifactName: PokeRogue-Setup.exe
 
 # The installer speaks German like everything else the user sees (DECISIONS.md 2026-09-13).
 # `installerLanguages` picks which NSIS language files are compiled in, `language` is the LCID that
