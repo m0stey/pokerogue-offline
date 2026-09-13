@@ -70,7 +70,7 @@ the game folder" problems.
 against — we hold a token, not a password verifier. So when the app is offline, typing the right
 *username* into the game's login screen is enough to get back in. Anyone who can already use the Windows account can therefore open the game as the user.
 
-**2. Anyone with access to the user Windows account has access to everything.** The token encryption is
+**2. Anyone with access to that Windows account has access to everything.** The token encryption is
 tied to that account, which is exactly what makes it useful — and exactly what makes it useless
 against someone sitting at an unlocked, signed-in laptop. The saves and the backups are plain files
 (the `.prsv` backups use the game's own public key, `x0i2O7WRiANTqPmZ`, which is published in the
@@ -78,7 +78,7 @@ game's source, so they are exactly as protected as the game's own exports — th
 protection there is a Windows password and a locked screen.
 
 Both are accepted deliberately. Fixing either would mean asking the user for a password the app cannot
-verify, which trades a real problem the user does not have for a daily annoyance the user would.
+verify, which trades a problem the user does not actually have for a daily annoyance the user would.
 
 ## The installer is not signed
 

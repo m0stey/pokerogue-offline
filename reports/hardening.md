@@ -242,9 +242,9 @@ questions, verification), `app/NOTES-proxy.md` (§9 rewritten, §14–§16 added
 
 ## Left open
 
-1. **`OWNER_NAME` in `strings.de.ts` is a placeholder**. It is the only name in the app and
-   it is in the one message that tells the user who to ask. One constant; please confirm the spelling the user
-   would recognise.
+1. **`OWNER_NAME` in `strings.de.ts` is a placeholder.** It is the only name in the app and it is in
+   the one message that tells the user who to ask. One constant; the spelling needs to be confirmed
+   before release.
 2. **No `game-<tag>` release exists yet.** Until the workflow is dispatched once, the update check
    finds nothing, logs it and shows nothing — correct behaviour, but the release-feed half of the
    notice has never run against a real feed.
