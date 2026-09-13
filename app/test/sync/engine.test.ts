@@ -9,6 +9,7 @@ import {
   FakeMirror,
   FakeUpstreamApi,
   NOW_ISO,
+  NOW_MS,
   advanceSession,
   advanceSystem,
   makeSession,
@@ -61,7 +62,7 @@ function rig(init: {
     api,
     backup,
     ask: p.ask,
-    deps: { mirror, api, backup, policy: p.port, now: () => 1_000_000 },
+    deps: { mirror, api, backup, policy: p.port, now: () => NOW_MS },
   };
 }
 
@@ -746,10 +747,15 @@ describe("sessions", () => {
   });
 
   it("pushing a save the server keeps whole produces no warning", async () => {
-    const local = advanceSession(makeSession({ playerFaints: 0 }), 1);
+    // A save with nothing the server's struct lacks: no `playerFaints`, no future fields.
+    const whole = { ...makeSession() } as Record<string, unknown>;
+    delete whole["playerFaints"];
+    const local = advanceSession(whole as SessionSave, 1);
     const r = rig({ mirror: { sessions: [{ base: BASE_SESSION, local }] }, api: { sessions: [BASE_SESSION] } });
     const res = await runSync(r.deps);
+    expect(res.pushed).toEqual(["session0"]);
     expect(res.warnings).toEqual([]);
+    expect(res.errors).toEqual([]);
   });
 });
 
@@ -815,7 +821,7 @@ describe("bookkeeping and wording", () => {
     });
     await runSync(r.deps);
     expect(r.mirror.readState()).toMatchObject({
-      lastSyncAt: new Date(1_000_000).toISOString(),
+      lastSyncAt: NOW_ISO,
       lastSyncResult: "ok",
     });
   });

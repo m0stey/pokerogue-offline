@@ -9,6 +9,7 @@ import {
   dayStamp,
   parseExportedPlaintext,
   plaintextForExport,
+  resolveBackupsDir,
   timeStamp,
 } from "../../src/sync/backup";
 import { decryptPrsv, encryptPrsv, expandSystemDataStr } from "../../src/sync/prsv";
@@ -35,6 +36,45 @@ afterEach(() => {
 const make = () => createBackupManager({ documentsDir, userDataDir, now: () => clock });
 const docsRoot = () => join(documentsDir, BACKUP_FOLDER_NAME);
 const udRoot = () => join(userDataDir, "backups");
+
+describe("where backups go", () => {
+  it("defaults to <documents>/PokeRogue Backups", () => {
+    expect(resolveBackupsDir({ documentsDir: "C:\\Users\\x\\Documents" })).toBe(
+      join("C:\\Users\\x\\Documents", BACKUP_FOLDER_NAME),
+    );
+  });
+
+  it("uses an explicit backupsDir verbatim, so the settings page can move it", async () => {
+    const chosen = join(root, "Somewhere Else");
+    const mgr = createBackupManager({ backupsDir: chosen, userDataDir, now: () => clock });
+    const path = await mgr.backup("system", null, makeSystem(), "update");
+    expect(path).toBe(join(chosen, "2026-09-12", "140506-update-system.prsv"));
+    expect(existsSync(path)).toBe(true);
+    // the userData copy is unaffected
+    expect(existsSync(join(udRoot(), "2026-09-12", "140506-update-system.prsv"))).toBe(true);
+  });
+
+  it("backupsDir wins over documentsDir when both are given", () => {
+    const chosen = join(root, "Chosen");
+    expect(resolveBackupsDir({ backupsDir: chosen, documentsDir })).toBe(chosen);
+  });
+
+  it("prunes the chosen folder, not the default one", async () => {
+    const chosen = join(root, "Elsewhere");
+    const mgr = createBackupManager({ backupsDir: chosen, userDataDir, now: () => clock });
+    await mgr.backup("system", null, makeSystem(), "auto");
+    clock = new Date(2026, 8, 13, 9, 0, 0);
+    await mgr.backup("system", null, makeSystem(), "auto");
+    clock = new Date(2027, 5, 1);
+    await mgr.prune();
+    expect(existsSync(join(chosen, "2026-09-12", "140506-auto-system.prsv"))).toBe(false);
+    expect(existsSync(join(chosen, "2026-09-13", "090000-auto-system.prsv"))).toBe(true);
+  });
+
+  it("refuses to be created with neither backupsDir nor documentsDir", () => {
+    expect(() => createBackupManager({ userDataDir })).toThrowError(TypeError);
+  });
+});
 
 describe("writing a backup", () => {
   it("uses the DESIGN.md path and filename shape", async () => {
@@ -65,6 +105,42 @@ describe("writing a backup", () => {
     expect(readdirSync(join(docsRoot(), "2026-09-12")).sort()).toEqual([
       "140506-update-system-2.prsv",
       "140506-update-system.prsv",
+    ]);
+  });
+
+  it("reuses an identical backup instead of writing a new file every sync", async () => {
+    // A save the server keeps refusing is backed up on every run; `conflict` backups are never
+    // pruned, so identical copies must not pile up.
+    const mgr = make();
+    const save = makeSystem();
+    const first = await mgr.backup("system", null, save, "conflict");
+    clock = new Date(2026, 8, 12, 14, 15, 6); // ten minutes later, same save
+    const second = await mgr.backup("system", null, save, "conflict");
+    expect(second).toBe(first);
+    expect(readdirSync(join(docsRoot(), "2026-09-12"))).toEqual(["140506-conflict-system.prsv"]);
+  });
+
+  it("still writes a new file when the content changed", async () => {
+    const mgr = make();
+    await mgr.backup("system", null, makeSystem(), "conflict");
+    clock = new Date(2026, 8, 12, 14, 15, 6);
+    await mgr.backup("system", null, makeSystem({ gender: 1 }), "conflict");
+    expect(readdirSync(join(docsRoot(), "2026-09-12")).sort()).toEqual([
+      "140506-conflict-system.prsv",
+      "141506-conflict-system.prsv",
+    ]);
+  });
+
+  it("does not confuse a different reason, kind or slot", async () => {
+    const mgr = make();
+    const save = makeSession();
+    await mgr.backup("session", 0, save, "update");
+    await mgr.backup("session", 0, save, "conflict"); // different reason
+    await mgr.backup("session", 1, save, "update"); // different slot
+    expect(readdirSync(join(docsRoot(), "2026-09-12")).sort()).toEqual([
+      "140506-conflict-session0.prsv",
+      "140506-update-session0.prsv",
+      "140506-update-session1.prsv",
     ]);
   });
 

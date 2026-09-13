@@ -381,7 +381,7 @@ export class FakeUpstreamApi implements UpstreamApi {
     if (s === null) {
       return { ok: true, status: 404, data: null };
     }
-    return { ok: true, status: 200, data: serverEcho(s) };
+    return { ok: true, status: 200, data: serverEcho(s, SERVER_SESSION_KEYS) };
   }
 
   async updateSession(slot: number, _clientSessionId: string, save: SessionSave): Promise<ApiResult<null>> {
