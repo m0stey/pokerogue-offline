@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self'" />
+    <title>Which progress should we keep?</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --ink: #1d1d20;
+        --muted: #5a5a63;
+        --line: #d9d9e0;
+        --accent: #d63031;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 22px 24px 18px;
+        font: 15px/1.55 "Segoe UI", system-ui, sans-serif;
+        color: var(--ink);
+        background: #f7f7fa;
+      }
+      h1 { font-size: 20px; margin: 0 0 6px; }
+      p.lead { margin: 0 0 18px; color: var(--muted); }
+      .cards { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+      .card {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        background: #fff;
+        padding: 14px 16px 16px;
+        display: flex;
+        flex-direction: column;
+      }
+      .card h2 { font-size: 16px; margin: 0 0 10px; }
+      dl { margin: 0 0 14px; }
+      dt { font-size: 12px; text-transform: none; color: var(--muted); margin-top: 8px; }
+      dd { margin: 0; font-size: 15px; }
+      button {
+        font: inherit;
+        margin-top: auto;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid var(--accent);
+        background: var(--accent);
+        color: #fff;
+        cursor: pointer;
+      }
+      button.secondary { background: #fff; color: var(--ink); border-color: var(--line); }
+      button:hover { filter: brightness(1.05); }
+      .note { margin: 16px 0 10px; color: var(--muted); }
+      label.remember { display: flex; align-items: center; gap: 8px; }
+      input[type="checkbox"] { width: 16px; height: 16px; }
+    </style>
+  </head>
+  <body>
+    <h1>Which progress should we keep?</h1>
+    <p class="lead">
+      Your game has different progress on this computer and on the PokeRogue website. Please pick the one you want to
+      keep playing.
+    </p>
+
+    <div class="cards">
+      <section class="card">
+        <h2>On this computer</h2>
+        <dl>
+          <dt>Play Time</dt>
+          <dd id="here-playtime">—</dd>
+          <dt>Last played</dt>
+          <dd id="here-last">—</dd>
+          <dt id="here-run-label">Run</dt>
+          <dd id="here-run">—</dd>
+        </dl>
+        <button id="keep-here">Keep this one</button>
+      </section>
+
+      <section class="card">
+        <h2>Online</h2>
+        <dl>
+          <dt>Play Time</dt>
+          <dd id="online-playtime">—</dd>
+          <dt>Last played</dt>
+          <dd id="online-last">—</dd>
+          <dt id="online-run-label">Run</dt>
+          <dd id="online-run">—</dd>
+        </dl>
+        <button id="keep-online" class="secondary">Keep this one</button>
+      </section>
+    </div>
+
+    <p class="note">The one you do not pick is saved as a backup file on this computer, so nothing is lost.</p>
+
+    <label class="remember">
+      <input type="checkbox" id="remember" />
+      Remember my choice (you can change this in Settings)
+    </label>
+
+    <script src="conflict.js"></script>
+  </body>
+</html>

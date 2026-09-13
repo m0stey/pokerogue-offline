@@ -8,3 +8,4 @@ game-build/work/
 *.log
 .DS_Store
 Thumbs.db
+app/release/
