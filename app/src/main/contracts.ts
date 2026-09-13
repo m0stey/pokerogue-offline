@@ -110,7 +110,7 @@ export interface ProxyEvents {
 
 export interface ProxyHandle {
   close(): Promise<void>;
-  /** Absent on the stand-in server, which has nothing to report. */
+  /** Optional so a test double need not provide one. */
   events?: ProxyEvents;
 }
 

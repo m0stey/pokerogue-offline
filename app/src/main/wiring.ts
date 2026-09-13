@@ -1,8 +1,7 @@
 // THE ONLY FILE IN src/main THAT TOUCHES src/proxy AND src/sync.
 //
-// It is bundled separately (see scripts/build.mjs). If src/proxy or src/sync are missing or do not
-// compile, dist/main/wiring.js is simply not produced and index.ts falls back to the stand-in
-// server in fallback-server.ts - the window still opens, nothing is saved online.
+// It is bundled separately (see scripts/build.mjs). dist/main/wiring.js is required: if it is
+// missing, index.ts shows the start-up error and exits rather than running a game that cannot save.
 //
 // The casts below are deliberate and are the whole point of the adapter: the real classes have
 // private members and slightly wider option objects, so they are not structurally assignable to

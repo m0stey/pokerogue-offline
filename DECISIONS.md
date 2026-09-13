@@ -74,3 +74,9 @@ a usable version for her that's stable and secure"), the following was decided a
 - **Left as it was**: the conflict dialog's shape, the backup retention policy, the sync sequence,
   and the `clear`/`delete` rules. Nothing about how progress is decided or stored changed apart from
   B2.
+
+## 2026-09-13 — v1 acceptance
+- v1 installer built (0.1.0, ~600 MB, unsigned) and installed; installed app verified to serve the game, forward the API, refuse foreign Host headers, keep dev hooks off.
+- Offline round trip verified against the real server with throwaway account 2: offline play time and wave pushed automatically 12 s after reconnect, verified backups written first. Details: reports/acceptance-v1.md.
+- End-user guide in German: docs/ANLEITUNG.md.
+- Screenshots of the developer's desktop are never committed; they stay in scratch/.

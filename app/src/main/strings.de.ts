@@ -115,14 +115,6 @@ export const DE = {
       "dein gespeicherter Fortschritt bleibt dabei erhalten.",
   },
 
-  /** Only ever seen in development, when there are no game files to serve. */
-  placeholderPage: {
-    title: APP_NAME,
-    text:
-      `Das Spiel wird auf diesem Computer noch eingerichtet. Bitte schließe dieses Fenster und ` +
-      `öffne ${APP_NAME} gleich noch einmal.`,
-  },
-
   /** Numbers turned into words (format.ts). */
   format: {
     nothing: "—",

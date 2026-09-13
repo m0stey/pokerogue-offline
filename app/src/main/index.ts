@@ -38,7 +38,6 @@ import {
   showStartupError,
   type SettingsPageData,
 } from "./dialogs";
-import { FallbackConnectivity, startFallbackServer } from "./fallback-server";
 import { ensureGameFiles, type GameLocation } from "./game-files";
 import { formatPlayTime, formatRelative } from "./format";
 import { forceOfflineCheck as makeForceOfflineCheck, FORCE_OFFLINE_FILE } from "./dev-hooks";
@@ -122,14 +121,18 @@ async function start(): Promise<void> {
   });
 
   runtime = loadRuntime(log);
+  if (!runtime) {
+    // Without the proxy and sync modules there is no game and no saving online: do not pretend.
+    showStartupError(DE.startup.generic);
+    app.exit(1);
+    return;
+  }
 
   // Connectivity first: the proxy needs it, and the update check asks it before looking anywhere.
   // A packaged build never gets the switch, so there is no way for her to end up stuck offline.
   const forceOfflineCheck = makeForceOfflineCheck({ isPackaged: app.isPackaged, userDataDir });
   if (forceOfflineCheck) log.info("development build: the force-offline switch is available", { file: FORCE_OFFLINE_FILE });
-  connectivity = runtime
-    ? runtime.makeConnectivity(log.child("connectivity"), forceOfflineCheck)
-    : new FallbackConnectivity(log.child("connectivity"));
+  connectivity = runtime.makeConnectivity(log.child("connectivity"), forceOfflineCheck);
 
   updater = new Updater({
     userDataDir,
@@ -206,28 +209,28 @@ async function start(): Promise<void> {
 
 async function startGameServer(userDataDir: string): Promise<boolean> {
   try {
-    if (runtime && mirror && gameLocation) {
-      proxy = await runtime.startProxy({
-        gameDir: gameLocation.dir,
-        mirror,
-        port: GAME_PORT,
-        connectivity,
-        log: log.child("proxy"),
-        gameVersion: gameLocation.gameVersion,
-      });
-      // The save online was written by a newer game than this build, so the game itself will
-      // refuse to open her account (reports/milestone-1.md §3). Say so, once.
-      proxy.events?.on("needs-game-update", (info) => {
-        showGameUpdateNotice("her save was made with a newer game", info);
-      });
-    } else {
-      proxy = await startFallbackServer({
-        gameDir: gameLocation?.dir ?? null,
-        port: GAME_PORT,
-        log: log.child("proxy"),
-      });
+    if (!runtime || !mirror || !gameLocation) {
+      // Nothing to serve: the game files are missing on a development build (a packaged build has
+      // already shown DE.startup.missingFiles and exited).
+      log.error("there are no game files to serve");
+      showStartupError(DE.startup.missingFiles);
+      app.exit(1);
+      return false;
     }
-    log.info("the game is being served", { port: GAME_PORT, dir: gameLocation?.dir ?? "(placeholder)" });
+    proxy = await runtime.startProxy({
+      gameDir: gameLocation.dir,
+      mirror,
+      port: GAME_PORT,
+      connectivity,
+      log: log.child("proxy"),
+      gameVersion: gameLocation.gameVersion,
+    });
+    // The save online was written by a newer game than this build, so the game itself will
+    // refuse to open her account (reports/milestone-1.md §3). Say so, once.
+    proxy.events?.on("needs-game-update", (info) => {
+      showGameUpdateNotice("her save was made with a newer game", info);
+    });
+    log.info("the game is being served", { port: GAME_PORT, dir: gameLocation.dir });
     return true;
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
@@ -269,7 +272,7 @@ function scheduleSyncOnConnectivity(): void {
 }
 
 async function runSyncNow(reason: string): Promise<SyncResult | null> {
-  if (!runtime || !mirror) return null; // stand-in server: nothing to save online yet
+  if (!runtime || !mirror) return null; // nothing to save online yet
   if (connectivity.state !== "online") return null;
   if (!mirror.readAccount()) {
     // She has never logged in on this computer, so there is nothing of hers to save anywhere.
@@ -396,7 +399,7 @@ async function finishAndExit(): Promise<void> {
 // Bits and pieces
 // -----------------------------------------------------------------------------
 
-/** Loads the real proxy/sync modules if they have been built; otherwise we run stand-in mode. */
+/** Loads the proxy/sync modules. Without them there is no game server, so start-up fails. */
 function loadRuntime(logger: Logger): RuntimeDeps | null {
   const file = join(__dirname, "wiring.js");
   if (!existsSync(file)) {
@@ -437,7 +440,7 @@ function settingsPageData(userDataDir: string): SettingsPageData {
 
 /**
  * Read-only peek at the mirror for the settings page. Uses the Mirror object when there is one and
- * falls back to reading the two files directly, so the page also works in stand-in mode.
+ * falls back to reading the two files directly, so the page also works before the mirror exists.
  */
 function peekMirror(userDataDir: string): { playTimeSeconds: number | null; lastSyncAt: string | number | null } {
   const dir = join(userDataDir, "mirror");
