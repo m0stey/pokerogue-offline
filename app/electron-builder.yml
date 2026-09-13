@@ -28,6 +28,9 @@ extraResources:
   - from: ../game-build/dist/game
     to: game
 
+# Sets the exe description and icon (signAndEditExecutable is off, see above).
+afterPack: scripts/after-pack.cjs
+
 win:
   target:
     - nsis

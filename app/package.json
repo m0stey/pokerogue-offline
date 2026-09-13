@@ -1,8 +1,8 @@
 {
   "name": "pokerogue-offline",
   "productName": "PokeRogue",
-  "version": "0.1.0",
-  "description": "PokeRogue that works on the plane and keeps your account in sync",
+  "version": "0.1.1",
+  "description": "FranziRogue",
   "private": true,
   "license": "MIT",
   "main": "dist/main/index.js",

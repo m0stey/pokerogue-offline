@@ -23,7 +23,7 @@ export const DE = {
   },
 
   tray: {
-    tooltip: APP_NAME,
+    tooltip: "FranziRogue",
     settings: "Einstellungen…",
     backups: "Sicherungskopien öffnen",
     showGame: "Spiel anzeigen",

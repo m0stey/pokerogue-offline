@@ -107,3 +107,6 @@ Fixed:
 14. Backups are flushed to disk before they count as verified.
 15. Partly: releases are blocked when the game calls server routes not listed in game-build/known-api-routes.json. There is still no automatic rollback to a previous version.
 Verified: 438 tests, offline round trip against the real server rerun with a reload right after reconnect (all 16 steps pass).
+
+## 2026-09-13 — hover text
+- Desktop shortcut description, exe file description/product name and tray tooltip are "FranziRogue" (owner request). The window and in-app name stay PokéRogue. App version 0.1.1 so installed apps update.
