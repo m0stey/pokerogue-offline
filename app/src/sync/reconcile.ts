@@ -6,13 +6,15 @@
 //
 // The rules, in order:
 //   local == remote                      -> noop (whatever base says, both sides already agree)
+//                                           ("==" against the server's copy tolerates the fields
+//                                            the server is known not to store — see `decide`)
 //   local is null, remote is not         -> pull (there is nothing here to lose)
 //   remote == base && local != base      -> push
 //   local  == base && remote != base     -> pull
 //   both changed, one descends the other -> fast-forward to the descendant
 //   anything else                        -> conflict. Never guess.
 
-import { isDescendantSession, isDescendantSystem, sessionEquals, systemEquals } from "./compare";
+import { isDescendantSession, isDescendantSystem, sessionEchoMatches, sessionEquals, systemEquals } from "./compare";
 import type { SessionSave, SystemSave } from "./types";
 
 export type SlotDecision = { kind: "noop" } | { kind: "push" } | { kind: "pull" } | { kind: "conflict" };
@@ -35,17 +37,26 @@ const PUSH = { kind: "push" } as const;
 const PULL = { kind: "pull" } as const;
 const CONFLICT = { kind: "conflict" } as const;
 
+/**
+ * @param eq        compares two copies *we* hold (local against base).
+ * @param eqRemote  compares the **server's** copy (first argument) against one of ours. Sessions
+ *                  need their own comparison here: the server stores a save through a fixed Go
+ *                  struct and hands back a copy without the keys that struct does not know, so a
+ *                  strict comparison would report "the server changed it" after every push we
+ *                  made ourselves (reports/milestone-1.md §5, B2).
+ */
 function decide<T>(
   base: T | null,
   local: T | null,
   remote: T | null,
   eq: (a: T | null, b: T | null) => boolean,
+  eqRemote: (remote: T | null, ours: T | null) => boolean,
   descends: (a: T | null, b: T | null) => boolean,
 ): ExplainedDecision {
   if (local === null && remote === null) {
     return { ...NOOP, reason: "both-empty" };
   }
-  if (eq(local, remote)) {
+  if (eqRemote(remote, local)) {
     return { ...NOOP, reason: "already-equal" };
   }
   if (local === null) {
@@ -54,7 +65,7 @@ function decide<T>(
   }
 
   const localChanged = !eq(local, base);
-  const remoteChanged = !eq(remote, base);
+  const remoteChanged = !eqRemote(remote, base);
 
   if (!remoteChanged && localChanged) {
     return { ...PUSH, reason: "local-changed" };
@@ -77,7 +88,11 @@ export function reconcileSystemExplained(
   local: SystemSave | null,
   remote: SystemSave | null,
 ): ExplainedDecision {
-  return decide(base, local, remote, systemEquals, isDescendantSystem);
+  // System saves need no separate remote comparison: the only thing the server adds is
+  // `starterMoveData: null` / `starterEggMoveData: null` and a re-sorted `gameStats`, and
+  // `systemEquals` already treats `null`, `[]` and an absent key as one value and ignores key
+  // order. Every system decision in the milestone-1 log was `noop / already-equal` because of it.
+  return decide(base, local, remote, systemEquals, systemEquals, isDescendantSystem);
 }
 
 export function reconcileSessionExplained(
@@ -85,7 +100,7 @@ export function reconcileSessionExplained(
   local: SessionSave | null,
   remote: SessionSave | null,
 ): ExplainedDecision {
-  return decide(base, local, remote, sessionEquals, isDescendantSession);
+  return decide(base, local, remote, sessionEquals, sessionEchoMatches, isDescendantSession);
 }
 
 export function reconcileSystem(

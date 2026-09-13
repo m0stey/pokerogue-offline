@@ -4,6 +4,7 @@
 import { Menu, Tray, nativeImage } from "electron";
 import { join } from "node:path";
 import type { Logger } from "../common/log";
+import { DE } from "./strings.de";
 
 export interface TrayActions {
   openSettings(): void;
@@ -30,13 +31,13 @@ export function createTray(opts: TrayOptions): Tray | null {
       return null;
     }
     tray = new Tray(image);
-    tray.setToolTip("PokeRogue");
+    tray.setToolTip(DE.tray.tooltip);
     tray.setContextMenu(
       Menu.buildFromTemplate([
-        { label: "Settings...", click: () => opts.actions.openSettings() },
-        { label: "Open backups folder", click: () => opts.actions.openBackupsFolder() },
+        { label: DE.tray.settings, click: () => opts.actions.openSettings() },
+        { label: DE.tray.backups, click: () => opts.actions.openBackupsFolder() },
         { type: "separator" },
-        { label: "Quit", click: () => opts.actions.quit() },
+        { label: DE.tray.quit, click: () => opts.actions.quit() },
       ]),
     );
     tray.on("double-click", () => opts.actions.showGame());

@@ -346,6 +346,52 @@ describe("offline replay: sessions", () => {
   });
 });
 
+// B3, reports/milestone-1.md §5: the client throws on any non-JSON / non-2xx answer here and
+// reloads the page two seconds later, which would destroy the end-of-run screen.
+describe("offline replay: session/newclear (the end of a run)", () => {
+  it("answers 200 with a bare JSON boolean, exactly like the server", () => {
+    const m = mirror();
+    const res = call(m, "/savedata/session/newclear", {
+      query: { ...CSID, slot: "0", isVictory: "false" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.text).toBe("false"); // JSON.parse-able, which is what the client requires
+    expect(res.json).toBe(false);
+  });
+
+  it("answers even when the slot or the clientSessionId is missing or odd", () => {
+    const m = mirror();
+    for (const query of [{}, { slot: "9" }, { slot: "nope", ...CSID }, { ...CSID }]) {
+      const res = call(m, "/savedata/session/newclear", { query });
+      expect(res.status, JSON.stringify(query)).toBe(200);
+      expect(res.json, JSON.stringify(query)).toBe(false);
+    }
+  });
+
+  it("changes nothing in the mirror — the run is still there for session/clear", () => {
+    const m = mirror();
+    m.setSessionSynced(0, makeSession());
+    const before = JSON.stringify(m.readSession(0));
+    call(m, "/savedata/session/newclear", { query: { ...CSID, slot: "0", isVictory: "true" } });
+    expect(JSON.stringify(m.readSession(0))).toBe(before);
+    expect(m.readSession(0).local).not.toBeNull();
+  });
+
+  it("and the run can then be cleared normally", () => {
+    const m = mirror();
+    m.setSessionSynced(0, makeSession());
+    call(m, "/savedata/session/newclear", { query: { ...CSID, slot: "0", isVictory: "false" } });
+    const cleared = call(m, "/savedata/session/clear", {
+      method: "POST",
+      query: { ...CSID, slot: "0" },
+      body: JSON.stringify(makeSession()),
+    });
+    expect(cleared.status).toBe(200);
+    expect(m.readSession(0).local).toBeNull();
+    expect(m.readSession(0).clearedAt).not.toBeNull();
+  });
+});
+
 describe("offline replay: updateall and the catch-all", () => {
   it("writes both halves and returns 200", () => {
     const m = mirror();
@@ -400,7 +446,6 @@ describe("offline replay: updateall and the catch-all", () => {
       "/game/titlestats",
       "/daily/seed",
       "/daily/rankings",
-      "/savedata/session/newclear",
       "/account/register",
       "/anything",
     ]) {

@@ -5,7 +5,9 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync, existsSync } from "
 import { dirname, join } from "node:path";
 import type { ConflictPolicy } from "../sync/types";
 
-export type MeteredPolicy = "ask" | "always" | "never";
+// The download settings (`allowMeteredDownloads`, `gameUpdateChannel`, `lastSeenGameTag`) went
+// away with the downloading updater on 2026-09-13. Anything still in an existing settings.json is
+// kept verbatim as an unknown field and simply ignored.
 
 export interface Settings {
   /** What to do when the save here and the save online both changed. */
@@ -14,12 +16,6 @@ export interface Settings {
   askedOnce: boolean;
   /** Where the `.prsv` backups go. Default: `Documents\PokeRogue Backups`. */
   backupsDir: string;
-  /** Whether game updates may be downloaded over a mobile connection. */
-  allowMeteredDownloads: MeteredPolicy;
-  /** Which release channel of the game build to follow. */
-  gameUpdateChannel: string;
-  /** The newest game version we have told the user about / installed. */
-  lastSeenGameTag: string;
 }
 
 export function defaultSettings(documentsDir: string): Settings {
@@ -27,14 +23,10 @@ export function defaultSettings(documentsDir: string): Settings {
     conflictPolicy: "ask",
     askedOnce: false,
     backupsDir: join(documentsDir, "PokeRogue Backups"),
-    allowMeteredDownloads: "ask",
-    gameUpdateChannel: "stable",
-    lastSeenGameTag: "",
   };
 }
 
 const CONFLICT_VALUES: ConflictPolicy[] = ["ask", "prefer-this-computer", "prefer-online"];
-const METERED_VALUES: MeteredPolicy[] = ["ask", "always", "never"];
 
 export class SettingsStore {
   private data: Settings;
@@ -82,10 +74,6 @@ export class SettingsStore {
       conflictPolicy: CONFLICT_VALUES.includes(s.conflictPolicy) ? s.conflictPolicy : "ask",
       askedOnce: typeof s.askedOnce === "boolean" ? s.askedOnce : false,
       backupsDir: typeof s.backupsDir === "string" && s.backupsDir.trim() ? s.backupsDir : fallback.backupsDir,
-      allowMeteredDownloads: METERED_VALUES.includes(s.allowMeteredDownloads) ? s.allowMeteredDownloads : "ask",
-      gameUpdateChannel:
-        typeof s.gameUpdateChannel === "string" && s.gameUpdateChannel.trim() ? s.gameUpdateChannel : "stable",
-      lastSeenGameTag: typeof s.lastSeenGameTag === "string" ? s.lastSeenGameTag : "",
     };
   }
 

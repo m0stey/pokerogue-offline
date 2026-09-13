@@ -35,6 +35,11 @@ win:
   signAndEditExecutable: false
   artifactName: PokeRogue-Setup-${version}.exe
 
+# The installer speaks German like everything else she sees (DECISIONS.md 2026-09-13).
+# `installerLanguages` picks which NSIS language files are compiled in, `language` is the LCID that
+# decides which one is used (1031 = German - Germany). `multiLanguageInstaller` stays off so there is
+# exactly one language and no selection dialog. Option names verified for electron-builder 26 in
+# app-builder-lib/out/targets/nsis/nsisOptions.d.ts (lines 191-206).
 nsis:
   oneClick: true
   perMachine: false
@@ -44,3 +49,7 @@ nsis:
   shortcutName: PokeRogue
   deleteAppDataOnUninstall: false
   runAfterFinish: true
+  installerLanguages: de_DE
+  language: "1031"
+  multiLanguageInstaller: false
+  displayLanguageSelector: false

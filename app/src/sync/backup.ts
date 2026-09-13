@@ -18,10 +18,14 @@ import { decryptPrsv, encryptPrsv, expandSystemDataStr, shortenSystemDataStr } f
 
 export type BackupKind = "system" | "session";
 
-/** `conflict` and `update` are never pruned (DESIGN.md §3.7). */
-export type BackupReason = "conflict" | "update" | string;
+/**
+ * `conflict`, `update` and `rejected` are never pruned (DESIGN.md §3.7).
+ * `rejected` is the fallback export written when the online service refused a save for a reason we
+ * do not understand — the one copy she has if that refusal turns out to be permanent.
+ */
+export type BackupReason = "conflict" | "update" | "rejected" | string;
 
-export const PROTECTED_REASONS: readonly string[] = ["conflict", "update"];
+export const PROTECTED_REASONS: readonly string[] = ["conflict", "update", "rejected"];
 export const BACKUP_FOLDER_NAME = "PokeRogue Backups";
 export const RETENTION_DAYS = 30;
 

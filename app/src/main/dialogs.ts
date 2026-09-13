@@ -1,21 +1,23 @@
 // Every window and message box the user ever sees apart from the game itself.
-// Rule for this file: no technical words. No "sync", "server", "API", "JSON", "conflict",
-// "merge", "token". If a sentence needs one of those, the sentence is wrong.
+// Rule for this file: no technical words. No "Sync", "Server", "Cache", "Token", "Mirror".
+// If a sentence needs one of those, the sentence is wrong. Every word lives in strings.de.ts.
 
 import { BrowserWindow, dialog, ipcMain, shell } from "electron";
 import { join } from "node:path";
 import type { Logger } from "../common/log";
 import type { ConflictAnswer, ConflictQuestion } from "./contracts";
 import { formatPlayTime, formatRelative } from "./format";
-import type { MeteredPolicy, SettingsStore } from "./settings";
+import type { SettingsStore } from "./settings";
+import { APP_NAME, DE } from "./strings.de";
 
 export interface SettingsPageData {
   conflictPolicy: string;
-  allowMeteredDownloads: MeteredPolicy;
   backupsDir: string;
   gameVersion: string;
   lastSavedOnline: string;
   playTime: string;
+  /** The words the page prints, so the HTML file itself carries no German. */
+  text: typeof DE.settings;
 }
 
 export interface DialogContext {
@@ -140,11 +142,20 @@ export interface ConflictCard {
 export interface ConflictPageData {
   here: ConflictCard;
   online: ConflictCard;
+  /** The words the page prints, so the HTML file itself carries no German. */
+  text: typeof DE.conflict;
 }
 
 export function describeConflict(q: ConflictQuestion, now = Date.now()): ConflictPageData {
+  const t = DE.conflict;
   const card = (s: ConflictQuestion["thisComputer"]): ConflictCard => {
-    if (!s) return { playTime: "nothing saved", lastPlayed: "—", run: q.kind === "session" ? "No run" : null };
+    if (!s) {
+      return {
+        playTime: t.nothingSaved,
+        lastPlayed: DE.format.nothing,
+        run: q.kind === "session" ? t.noRun : null,
+      };
+    }
     return {
       playTime: formatPlayTime(s.playTime),
       lastPlayed: formatRelative(s.timestamp, now),
@@ -152,11 +163,11 @@ export function describeConflict(q: ConflictQuestion, now = Date.now()): Conflic
         q.kind !== "session"
           ? null
           : typeof s.waveIndex === "number" && s.waveIndex > 0
-            ? `Run in progress: wave ${s.waveIndex}`
-            : "No run",
+            ? t.runInProgress(s.waveIndex)
+            : t.noRun,
     };
   };
-  return { here: card(q.thisComputer), online: card(q.online) };
+  return { here: card(q.thisComputer), online: card(q.online), text: t };
 }
 
 /**
@@ -191,7 +202,7 @@ export function askConflict(q: ConflictQuestion, parent?: BrowserWindow | null):
       page: "conflict.html",
       width: 680,
       height: 580,
-      title: "Which progress should we keep?",
+      title: DE.titles.conflict,
       parent,
       modal: Boolean(parent),
       alwaysOnTop: true,
@@ -218,7 +229,7 @@ export function openSettings(parent?: BrowserWindow | null): BrowserWindow {
       return c.settingsPageData();
     },
     onSubmit: (value) => {
-      const v = (value ?? {}) as { conflictPolicy?: unknown; allowMeteredDownloads?: unknown };
+      const v = (value ?? {}) as { conflictPolicy?: unknown };
       const patch: Parameters<SettingsStore["update"]>[0] = {};
       if (
         v.conflictPolicy === "ask" ||
@@ -227,13 +238,6 @@ export function openSettings(parent?: BrowserWindow | null): BrowserWindow {
       ) {
         patch.conflictPolicy = v.conflictPolicy;
         patch.askedOnce = v.conflictPolicy !== "ask";
-      }
-      if (
-        v.allowMeteredDownloads === "ask" ||
-        v.allowMeteredDownloads === "always" ||
-        v.allowMeteredDownloads === "never"
-      ) {
-        patch.allowMeteredDownloads = v.allowMeteredDownloads;
       }
       c.settings.update(patch);
       c.log.info("settings changed", { ...patch });
@@ -246,8 +250,8 @@ export function openSettings(parent?: BrowserWindow | null): BrowserWindow {
   settingsWindow = openUi({
     page: "settings.html",
     width: 560,
-    height: 720,
-    title: "PokeRogue Settings",
+    height: 620,
+    title: DE.titles.settings,
     parent,
     modal: false,
     session,
@@ -270,37 +274,14 @@ export function openBackupsFolder(): void {
 // Message boxes
 // ---------------------------------------------------------------------------
 
-export interface MeteredAnswer {
-  download: boolean;
-  remember: boolean;
-}
-
-/** Asked before a big download when Windows says this is a mobile connection. */
-export async function askMeteredDownload(sizeText: string, parent?: BrowserWindow | null): Promise<MeteredAnswer> {
-  const result = await showBox(parent, {
-    type: "question",
-    title: "PokeRogue",
-    message: "You seem to be on a mobile connection.",
-    detail: `Download the game update now (${sizeText}), or wait for Wi-Fi?`,
-    buttons: ["Download now", "Wait for Wi-Fi"],
-    defaultId: 1,
-    cancelId: 1,
-    checkboxLabel: "Always do this, do not ask again",
-    checkboxChecked: false,
-    noLink: true,
-  });
-  return { download: result.response === 0, remember: result.checkboxChecked };
-}
-
 /** Shown when we could not put her progress online and had to keep a copy instead. */
 export async function showBackupSavedNotice(parent?: BrowserWindow | null): Promise<void> {
   const result = await showBox(parent, {
     type: "info",
-    title: "PokeRogue",
-    message: "Your progress is safe.",
-    detail:
-      "We could not put this progress on the PokeRogue website just now, so we saved a copy of it on this computer. You can keep playing - we will try again later.",
-    buttons: ["Open backups folder", "OK"],
+    title: APP_NAME,
+    message: DE.backupSaved.message,
+    detail: DE.backupSaved.detail,
+    buttons: [DE.backupSaved.openFolder, DE.backupSaved.ok],
     defaultId: 1,
     cancelId: 1,
     noLink: true,
@@ -308,14 +289,32 @@ export async function showBackupSavedNotice(parent?: BrowserWindow | null): Prom
   if (result.response === 0) openBackupsFolder();
 }
 
+/**
+ * The game (or the online service) says her account needs a newer build than the one on this
+ * computer. Shown at most once per app start — the caller owns that flag — because there is exactly
+ * one thing she can do about it and repeating it would only worry her.
+ */
+export async function showNeedsGameUpdateNotice(parent?: BrowserWindow | null): Promise<void> {
+  await showBox(parent, {
+    type: "info",
+    title: APP_NAME,
+    message: DE.needsGameUpdate.message,
+    detail: DE.needsGameUpdate.detail,
+    buttons: [DE.needsGameUpdate.ok],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true,
+  });
+}
+
 /** One message, then the app closes. Used when we truly cannot start. */
 export function showStartupError(detail: string): void {
   dialog.showMessageBoxSync({
     type: "error",
-    title: "PokeRogue",
-    message: "PokeRogue could not start.",
+    title: APP_NAME,
+    message: DE.startup.message,
     detail,
-    buttons: ["Close"],
+    buttons: [DE.startup.close],
     noLink: true,
   });
 }
@@ -350,7 +349,11 @@ export function showSavingSplash(): void {
   });
   splash.removeMenu();
   splash.once("ready-to-show", () => splash?.show());
-  void splash.loadFile(join(c.uiDir, "splash.html"));
+  // The splash has no preload (it asks nothing and answers nothing), so its one sentence travels
+  // in the query string and splash.js prints it. That keeps every German word in strings.de.ts.
+  void splash.loadFile(join(c.uiDir, "splash.html"), {
+    search: new URLSearchParams({ text: DE.splash }).toString(),
+  });
 }
 
 export function hideSavingSplash(): void {

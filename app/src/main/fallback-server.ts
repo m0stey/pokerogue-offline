@@ -10,6 +10,7 @@ import { get as httpsGet } from "node:https";
 import { extname, join, normalize, resolve, sep } from "node:path";
 import type { Logger } from "../common/log";
 import type { Connectivity, ConnectivityState, ProxyHandle } from "./contracts";
+import { DE } from "./strings.de";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -37,10 +38,10 @@ const MIME: Record<string, string> = {
   ".wasm": "application/wasm",
 };
 
-const PLACEHOLDER = `<!doctype html><meta charset="utf-8"><title>PokeRogue</title>
+const PLACEHOLDER = `<!doctype html><meta charset="utf-8"><title>${DE.placeholderPage.title}</title>
 <style>html,body{height:100%;margin:0;display:grid;place-items:center;background:#1b1b1f;color:#f2f2f5;
 font:16px/1.5 "Segoe UI",system-ui,sans-serif;text-align:center}p{max-width:28rem;opacity:.8}</style>
-<h1>PokeRogue</h1><p>The game is still being set up on this computer. Please close this window and start PokeRogue again in a moment.</p>`;
+<h1>${DE.placeholderPage.title}</h1><p>${DE.placeholderPage.text}</p>`;
 
 export interface FallbackOptions {
   gameDir: string | null;

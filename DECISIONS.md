@@ -33,3 +33,44 @@
 - Session read-back verification compares only keys the server returned; dropped keys are warnings, critical keys (seed, waveIndex, timestamp, party, gameMode, playTime) are errors.
 - Finished-offline runs propagate via `session/delete` only under four preconditions (see DESIGN §3.8); `clear` is never sent.
 - UI language: German for every user-visible string (dialogs, settings page, tray, splash, installer). Plain everyday German, informal "du", no technical terms. Decided 2026-09-13.
+
+## 2026-09-13 — scope trim: ship a stable, secure v1 in German
+
+After the milestone-1 run was stopped part-way ("the scope of the project got a bit too big — I want
+a usable version for her that's stable and secure"), the following was decided and is now implemented
+(see `reports/hardening.md`, `SECURITY.md`, and the rewritten DESIGN.md §3.4/§3.6/§3.7/§3.9/§3.10).
+
+- **The app no longer updates itself.** The downloading updater is gone — no release download, no
+  SHA-256 check, no unpacking, no swap at next start, no `staging`/`previous` folders, no
+  metered-connection detection and no metered prompt, and the `allowMeteredDownloads`,
+  `gameUpdateChannel` and `lastSeenGameTag` settings with them. What is left is a notice: the GitHub
+  release feed is read at most once every 6 h while online, and a newer `game-<tag>` produces one
+  German message asking her to get the new installation. A new game version arrives as a new
+  installer, run by hand. Rationale: ~600 MB of download-verify-unpack-swap machinery had never once
+  run for real, and every part of it can leave the game files broken — which is the one thing that
+  must not happen.
+- **The game-version block is handled, not prevented.** The client refuses to load a system save
+  newer than its own build, and one browser session on pokerogue.net causes it. The proxy now spots
+  it on every `system/get` (online and offline) and the shell says, once per start, what happened,
+  that nothing is lost, and who to ask. We cannot avoid the block; we can stop it looking like a
+  broken app.
+- **B2 fixed in `src/sync`:** any comparison against the server's copy of a *session* now tolerates
+  the keys the server does not store. The server's echo of our own push is no longer read as "the
+  server changed it", which ends the ten-minute pull loop and the ~144 never-pruned `.prsv` files a
+  day.
+- **B3 fixed in `src/proxy`:** offline `session/newclear` answers `200 false` (the server's own
+  shape) instead of 503. A 503 made the client throw, wipe the game-over screen and reload the page.
+- **`unknown-rejection` now exports a fallback `.prsv`** with `reason: "rejected"` (never pruned) and
+  reports it in `SyncResult.unrecoverable` — the QA-phase item from 2026-09-13 above.
+- **The account token is encrypted at rest** with Electron `safeStorage`. `src/proxy` stays
+  Electron-free through an injectable `SecretCodec`.
+- **The proxy refuses foreign `Host` headers** (DNS-rebinding guard) on top of binding `127.0.0.1`.
+- **German everywhere**, with every string in one reviewable module `src/main/strings.de.ts`, and the
+  NSIS installer set to German (`installerLanguages: de_DE`, `language: 1031`). "Spielzeit" is used
+  for Play Time, matching the game's own German locale.
+- **SECURITY.md** is written and states the two accepted weaknesses plainly: the offline login does
+  not verify the password, and anyone with her Windows account has everything. The installer is
+  unsigned.
+- **Left as it was**: the conflict dialog's shape, the backup retention policy, the sync sequence,
+  and the `clear`/`delete` rules. Nothing about how progress is decided or stored changed apart from
+  B2.

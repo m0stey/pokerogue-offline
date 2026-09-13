@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="de">
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self'" />
-    <title>Which progress should we keep?</title>
+    <title>PokéRogue</title>
     <style>
       :root {
         color-scheme: light;
@@ -53,45 +53,42 @@
     </style>
   </head>
   <body>
-    <h1>Which progress should we keep?</h1>
-    <p class="lead">
-      Your game has different progress on this computer and on the PokeRogue website. Please pick the one you want to
-      keep playing.
-    </p>
+    <h1 id="t-heading"></h1>
+    <p class="lead" id="t-lead"></p>
 
     <div class="cards">
       <section class="card">
-        <h2>On this computer</h2>
+        <h2 id="t-here"></h2>
         <dl>
-          <dt>Play Time</dt>
+          <dt id="t-playtime-here"></dt>
           <dd id="here-playtime">—</dd>
-          <dt>Last played</dt>
+          <dt id="t-last-here"></dt>
           <dd id="here-last">—</dd>
-          <dt id="here-run-label">Run</dt>
+          <dt id="here-run-label"></dt>
           <dd id="here-run">—</dd>
         </dl>
-        <button id="keep-here">Keep this one</button>
+        <button id="keep-here"></button>
       </section>
 
       <section class="card">
-        <h2>Online</h2>
+        <h2 id="t-online"></h2>
         <dl>
-          <dt>Play Time</dt>
+          <dt id="t-playtime-online"></dt>
           <dd id="online-playtime">—</dd>
-          <dt>Last played</dt>
+          <dt id="t-last-online"></dt>
           <dd id="online-last">—</dd>
-          <dt id="online-run-label">Run</dt>
+          <dt id="online-run-label"></dt>
           <dd id="online-run">—</dd>
         </dl>
-        <button id="keep-online" class="secondary">Keep this one</button>
+        <button id="keep-online" class="secondary"></button>
       </section>
     </div>
 
-    <p class="note">The one you do not pick is saved as a backup file on this computer, so nothing is lost.</p>
+    <p class="note" id="t-note"></p>
 
     <label class="remember">
       <input type="checkbox" id="remember" />
-      Remember my choice (you can change this in Settings)
+      <span id="t-remember"></span>
     </label>
 
     <script src="conflict.js"></script>

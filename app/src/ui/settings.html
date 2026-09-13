@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="en">
+<html lang="de">
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src 'self'" />
-    <title>PokeRogue Settings</title>
+    <title>PokéRogue</title>
     <style>
       :root {
         color-scheme: light;
@@ -46,41 +46,34 @@
     </style>
   </head>
   <body>
-    <h1>PokeRogue Settings</h1>
+    <h1 id="t-heading"></h1>
 
     <section>
-      <h2>If your progress is different here and online</h2>
-      <label class="choice"><input type="radio" name="conflict" value="ask" /> Ask me which one to keep</label>
-      <label class="choice"><input type="radio" name="conflict" value="prefer-this-computer" /> Always keep what is on this computer</label>
-      <label class="choice"><input type="radio" name="conflict" value="prefer-online" /> Always keep what is online</label>
+      <h2 id="t-conflict-heading"></h2>
+      <label class="choice"><input type="radio" name="conflict" value="ask" /> <span id="t-conflict-ask"></span></label>
+      <label class="choice"><input type="radio" name="conflict" value="prefer-this-computer" /> <span id="t-conflict-here"></span></label>
+      <label class="choice"><input type="radio" name="conflict" value="prefer-online" /> <span id="t-conflict-online"></span></label>
     </section>
 
     <section>
-      <h2>On a mobile connection</h2>
-      <label class="choice"><input type="radio" name="metered" value="ask" /> Ask before downloading game updates</label>
-      <label class="choice"><input type="radio" name="metered" value="always" /> Always download</label>
-      <label class="choice"><input type="radio" name="metered" value="never" /> Only download on Wi-Fi</label>
-    </section>
-
-    <section>
-      <h2>Backups folder</h2>
+      <h2 id="t-backups-heading"></h2>
       <div class="path" id="backups-dir">—</div>
-      <button id="open-backups">Open folder</button>
+      <button id="open-backups"></button>
     </section>
 
     <section>
-      <h2>About your game</h2>
+      <h2 id="t-about-heading"></h2>
       <div class="rows">
-        <div class="k">Game version</div>
+        <div class="k" id="t-game-version"></div>
         <div id="game-version">—</div>
-        <div class="k">Last saved online</div>
+        <div class="k" id="t-last-saved"></div>
         <div id="last-saved">—</div>
-        <div class="k">Play Time</div>
+        <div class="k" id="t-play-time"></div>
         <div id="play-time">—</div>
       </div>
     </section>
 
-    <p class="footnote">Your progress is saved online by itself. You do not have to do anything here.</p>
+    <p class="footnote" id="t-footnote"></p>
 
     <script src="settings.js"></script>
   </body>

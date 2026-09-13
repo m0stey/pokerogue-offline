@@ -8,6 +8,7 @@ import {
   firstDifference,
   isDescendantSession,
   isDescendantSystem,
+  sessionEchoMatches,
   sessionEquals,
   sessionEqualsStrict,
   structurallyEqual,
@@ -296,5 +297,70 @@ describe("verifySessionReadBack — only the keys the server returned are compar
     for (const f of KNOWN_LOSSY_SESSION_FIELDS) {
       expect(CRITICAL_SESSION_FIELDS).not.toContain(f);
     }
+  });
+});
+
+describe("sessionEchoMatches — is the server's copy just its echo of ours? (B2)", () => {
+  const sent = makeSession({ playerFaints: 4, someFutureClientField: { a: 1, b: [2] } });
+
+  it("a lossy echo of the save we sent matches", () => {
+    expect(sessionEchoMatches(serverEcho(sent, SERVER_SESSION_KEYS), sent)).toBe(true);
+  });
+
+  it("an empty array coming back as null matches", () => {
+    const got = { ...serverEcho(sent, SERVER_SESSION_KEYS) } as Record<string, unknown>;
+    got["enemyParty"] = null;
+    expect(sessionEchoMatches(got as unknown as SessionSave, sent)).toBe(true);
+  });
+
+  it("a value the server actually changed does not match", () => {
+    const got = { ...serverEcho(sent, SERVER_SESSION_KEYS), money: 12345 } as SessionSave;
+    expect(sessionEchoMatches(got, sent)).toBe(false);
+  });
+
+  it("a save from somewhere else that is further along does not match", () => {
+    expect(sessionEchoMatches(advanceSession(sent, 3), sent)).toBe(false);
+  });
+
+  it("a missing critical field does not match, however lossy the server is", () => {
+    for (const field of CRITICAL_SESSION_FIELDS) {
+      const got = { ...serverEcho(sent, SERVER_SESSION_KEYS) } as Record<string, unknown>;
+      delete got[field];
+      expect(sessionEchoMatches(got as unknown as SessionSave, sent), field).toBe(false);
+    }
+  });
+
+  it("a non-critical key we sent as empty and did not get back still matches", () => {
+    const got = { ...serverEcho(sent, SERVER_SESSION_KEYS) } as Record<string, unknown>;
+    delete got["challenges"]; // sent as []
+    expect(sessionEchoMatches(got as unknown as SessionSave, sent)).toBe(true);
+  });
+
+  it("nulls line up only with nulls", () => {
+    expect(sessionEchoMatches(null, null)).toBe(true);
+    expect(sessionEchoMatches(null, sent)).toBe(false);
+    expect(sessionEchoMatches(sent, null)).toBe(false);
+  });
+
+  it("is asymmetric on purpose: the server's copy comes first", () => {
+    const echo = serverEcho(sent, SERVER_SESSION_KEYS);
+    expect(sessionEchoMatches(echo, sent)).toBe(true);
+    // the other way round, `sent` carries a key the echo does not, which is a real difference
+    expect(sessionEchoMatches(sent, echo)).toBe(false);
+  });
+});
+
+describe("the system save needs no echo tolerance", () => {
+  it("the nulls the server adds already compare equal", () => {
+    const sent = makeSystem();
+    const got = { ...serverEcho(sent), starterMoveData: null, starterEggMoveData: null } as SystemSave;
+    expect(systemEquals(got, sent)).toBe(true);
+  });
+
+  it("and a re-sorted gameStats is the same object", () => {
+    const sent = makeSystem();
+    const stats = sent.gameStats as Record<string, unknown>;
+    const resorted = Object.fromEntries(Object.keys(stats).sort().map((k) => [k, stats[k]]));
+    expect(systemEquals({ ...sent, gameStats: resorted } as SystemSave, sent)).toBe(true);
   });
 });

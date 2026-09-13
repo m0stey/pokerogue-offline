@@ -4,7 +4,7 @@ Contract: `DESIGN.md` §3.1, §3.6–§3.9 (including the §3.4/§3.8 amendment 
 and the invariants in §4. Runtime dependencies: Node built-ins only (`crypto`, `fs`, `https`,
 `path`). No `npm install` was run in `app/`.
 
-Tests: `app/test/sync/` — `npx vitest run test/sync` → **257 passing, 1 skipped** (the live contract
+Tests: `app/test/sync/` — `npx vitest run test/sync` → **276 passing, 1 skipped** (the live contract
 test, which needs `LIVE=1`), across 9 files. Whole-repo `npx vitest run` → 341 passing, 1 skipped
 across 14 files; `npx tsc --noEmit -p app` is clean.
 
@@ -15,7 +15,7 @@ across 14 files; `npx tsc --noEmit -p app` is clean.
 | File | What it does |
 |---|---|
 | `prsv.ts` | `.prsv` crypto (CryptoJS-compatible), bypass-blob codec, the system-save key shortening/expansion |
-| `compare.ts` | structural equality with `null`/`[]`/absent normalisation, `KNOWN_LOSSY_SESSION_FIELDS`, `CRITICAL_SESSION_FIELDS`, `verifySessionReadBack`, `isDescendantSystem` / `isDescendantSession`, server-compatible `compareGameVersion` |
+| `compare.ts` | structural equality with `null`/`[]`/absent normalisation, `KNOWN_LOSSY_SESSION_FIELDS`, `CRITICAL_SESSION_FIELDS`, `verifySessionReadBack`, **`sessionEchoMatches`**, `isDescendantSystem` / `isDescendantSession`; re-exports `compareGameVersion` from `src/common/version.ts` (the proxy needs the same rule) |
 | `reconcile.ts` | pure three-way decision: `noop` / `push` / `pull` / `conflict` |
 | `errors.ts` | server prose + transport/HTML → a closed `ClassifiedError` union, plus plain-language wording |
 | `upstream-api.ts` | `UpstreamApi` interface and `HttpUpstreamApi` (node `https`) |
@@ -79,7 +79,7 @@ interface SyncResult {
 - `needsGameUpdate` is the trigger for the "update the game" dialog. It is set for both
   `needs-game-update` (the save online is newer than this build) and `version-too-low` (this build
   is below the server's hard minimum) — both are fixed by updating.
-- `unrecoverable` is the trigger for DESIGN §3.10's "backup exported" notice. A backup is always
+- `unrecoverable` now also carries an `unknown-rejection` (backup reason `rejected`). It is the trigger for DESIGN §3.10's "backup exported" notice. A backup is always
   *attempted* before an entry is added, and `backupPath` says whether it worked. When it is `null`,
   `errors` also carries `<what>:backup-failed`.
 - `warnings` never reach `summary`; they are for the log and the settings page.
@@ -226,6 +226,24 @@ client field now produces one warning per push instead of a permanently dirty sl
 
 12. **No backup is written when the side being replaced is `null`.** There is nothing to lose.
 
+13. **Any comparison against the *server's* copy of a session tolerates the keys the server does
+    not store** (`sessionEchoMatches`). This is the B2 fix from reports/milestone-1.md §5. The
+    server decodes a session into a fixed Go struct and drops every key that struct does not have,
+    so after a push the copy it hands back is never byte-identical to what we sent. `base` is what
+    we sent (§5.7), so a strict `base` vs `remote` comparison reported `remote-changed` on every
+    single sync: the engine backed up the local run and overwrote it with the server's degraded
+    copy, every ten minutes, writing a never-pruned `.prsv` each time. `reconcile.ts` now takes a
+    separate comparator for anything involving `remote`, and `mayPropagateClear` uses it too.
+    `KNOWN_LOSSY_SESSION_FIELDS` was not enough on its own: the set of dropped keys cannot be
+    enumerated ahead of a client release, which is exactly why `verifySessionReadBack` compares
+    only what came back, and why this does the same. Dropping a `CRITICAL_SESSION_FIELDS` key is
+    still a real difference. System saves needed no change — `systemEquals` already treats `null`,
+    `[]` and an absent key as one value, which absorbs the two nulls the server adds.
+14. **`unknown-rejection` now exports a fallback `.prsv`** with `reason: "rejected"` (never pruned)
+    and appears in `result.unrecoverable`, answering open question 1 below. It is still fail-safe:
+    nothing is written to either side and the save stays dirty, so the next sync tries again — she
+    simply also has an importable copy if the refusal turns out to be permanent.
+
 ## 6. Known limits
 
 - **A system save whose *string value* is literally `"$sa"` (or any other short key) cannot be
@@ -248,10 +266,8 @@ client field now produces one warning per push instead of a permanently dirty sl
 
 ## 7. Open questions for the orchestrator
 
-1. **Should `unknown-rejection` also export a fallback `.prsv`?** Today only the rejections in
-   `UNRECOVERABLE_PUSH_KINDS` do; an unknown rejection keeps the save dirty and retries, per §3.9's
-   "fail safe: do nothing". If an unknown rejection ever turns out to be permanent, the user has no
-   exported copy until someone classifies it. Cheap to change (one line in `handlePushRejection`).
+1. ~~Should `unknown-rejection` also export a fallback `.prsv`?~~ **Answered yes** (DECISIONS.md
+   2026-09-13) and implemented: `reason: "rejected"`, never pruned, reported in `unrecoverable`.
 2. **Conflict dialog wording and the shape of `ConflictQuestion`.** It carries `playTime`,
    `timestamp`, `waveIndex` and `seed` per side. If the dialog wants "last played" as a date or a
    party preview, the shape can grow.

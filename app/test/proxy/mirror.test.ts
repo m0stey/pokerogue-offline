@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import type { SecretCodec } from "../../src/common/secret";
 import { Mirror, structurallyEqual } from "../../src/proxy/mirror";
 import { cleanupTempDirs, makeSession, makeSystem, tempDir, withPlayTime } from "./helpers";
 
@@ -330,5 +331,92 @@ describe("Mirror: corrupt file recovery", () => {
     fs.writeFileSync(path.join(mirror.dir, "system.json.tmp-orphan"), "partial", "utf8");
     expect(fs.readFileSync(path.join(mirror.dir, "system.json"), "utf8")).toBe(before);
     expect(mirror.readSystem().local?.trainerId).toBe(60746);
+  });
+});
+
+// ------------------------------------------------------------------------------------------------
+// The account token on disk. src/main hands the Mirror an Electron `safeStorage`-backed codec;
+// here it gets a fake one, so the Mirror's half of the arrangement can be tested without Electron.
+// ------------------------------------------------------------------------------------------------
+
+/** Reversible, obviously not real encryption, and obviously not the plain value. */
+const fakeSecret: SecretCodec = {
+  available: true,
+  protect: (value) => `FAKE:${Buffer.from(value, "utf8").toString("base64")}`,
+  unprotect: (stored) => {
+    if (!stored.startsWith("FAKE:")) throw new Error("not ours");
+    return Buffer.from(stored.slice("FAKE:".length), "base64").toString("utf8");
+  },
+};
+
+const readAccountFile = (mirror: Mirror): Record<string, unknown> =>
+  JSON.parse(fs.readFileSync(path.join(mirror.dir, "account.json"), "utf8")) as Record<string, unknown>;
+
+describe("Mirror: protecting the stored sign-in", () => {
+  it("keeps the token out of the file and reads it back", () => {
+    const mirror = new Mirror(path.join(tempDir(), "mirror"), { secret: fakeSecret });
+    mirror.writeAccount({ username: "offsync", token: "s3cret-token", info: null, lastLoginAt: null });
+
+    const raw = readAccountFile(mirror);
+    expect(raw.token).toBeUndefined();
+    expect(typeof raw.tokenEnc).toBe("string");
+    expect(JSON.stringify(raw)).not.toContain("s3cret-token");
+    expect(mirror.readAccount()?.token).toBe("s3cret-token");
+  });
+
+  it("falls back to a plain token when there is no protection to be had", () => {
+    const mirror = new Mirror(path.join(tempDir(), "mirror"));
+    mirror.writeAccount({ username: "offsync", token: "s3cret-token", info: null, lastLoginAt: null });
+    const raw = readAccountFile(mirror);
+    expect(raw.token).toBe("s3cret-token");
+    expect(raw.tokenEnc).toBeUndefined();
+    expect(mirror.readAccount()?.token).toBe("s3cret-token");
+  });
+
+  it("migrates a token written before protection existed, the first time it is read", () => {
+    const dir = path.join(tempDir(), "mirror");
+    const before = new Mirror(dir); // the old behaviour: plain text
+    before.writeAccount({ username: "offsync", token: "old-token", info: null, lastLoginAt: "2026-09-12" });
+    expect(readAccountFile(before).token).toBe("old-token");
+
+    const after = new Mirror(dir, { secret: fakeSecret });
+    expect(after.readAccount()).toEqual({
+      username: "offsync",
+      token: "old-token",
+      info: null,
+      lastLoginAt: "2026-09-12",
+    });
+    const raw = readAccountFile(after);
+    expect(raw.token).toBeUndefined();
+    expect(raw.tokenEnc).toBe(fakeSecret.protect("old-token"));
+  });
+
+  it("puts the file aside when the token cannot be read back", () => {
+    const dir = path.join(tempDir(), "mirror");
+    const written = new Mirror(dir, { secret: fakeSecret });
+    written.writeAccount({ username: "offsync", token: "tok", info: null, lastLoginAt: null });
+
+    // A different Windows user, or a reset credential store: the ciphertext is unreadable.
+    const otherUser = new Mirror(dir, {
+      secret: {
+        available: true,
+        protect: (v) => v,
+        unprotect: () => {
+          throw new Error("decryption failed");
+        },
+      },
+    });
+    expect(otherUser.readAccount()).toBeNull();
+    expect(fs.readdirSync(dir).filter((f) => f.startsWith("account.json.corrupt-"))).toHaveLength(1);
+    // and a fresh login on a working credential store writes a clean file again
+    const relogin = new Mirror(dir, { secret: fakeSecret });
+    relogin.writeAccount({ username: "offsync", token: "new", info: null, lastLoginAt: null });
+    expect(relogin.readAccount()?.token).toBe("new");
+  });
+
+  it("still quarantines an account file that is not an account at all", () => {
+    const mirror = new Mirror(path.join(tempDir(), "mirror"), { secret: fakeSecret });
+    fs.writeFileSync(path.join(mirror.dir, "account.json"), JSON.stringify({ username: "u" }), "utf8");
+    expect(mirror.readAccount()).toBeNull();
   });
 });

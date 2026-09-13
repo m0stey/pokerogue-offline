@@ -6,9 +6,10 @@
 // contract here.
 
 import type { Logger } from "../common/log";
+import type { SecretCodec } from "../common/secret";
 import type { AccountInfo, ConflictPolicy, SaveSnapshot, SessionSave, SystemSave } from "../sync/types";
 
-export type { AccountInfo, ConflictPolicy, Logger, SaveSnapshot, SessionSave, SystemSave };
+export type { AccountInfo, ConflictPolicy, Logger, SaveSnapshot, SecretCodec, SessionSave, SystemSave };
 
 /** DESIGN.md §1. Compiled into the game build; must never change. */
 export const GAME_PORT = 47830;
@@ -91,10 +92,26 @@ export interface ProxyOptions {
   port: number;
   connectivity: Connectivity;
   log: Logger;
+  /** `gameVersion` from the served build's `version.json`. Defaults to reading it from `gameDir`. */
+  gameVersion?: string | null;
+}
+
+/** Everything the proxy tells the shell about. Today that is one thing. */
+export interface ProxyEvents {
+  /**
+   * The account's save was written by a newer game than the build we serve, so this build will
+   * refuse to load it (reports/milestone-1.md §3).
+   */
+  on(
+    event: "needs-game-update",
+    listener: (info: { saveVersion: string; servedVersion: string }) => void,
+  ): unknown;
 }
 
 export interface ProxyHandle {
   close(): Promise<void>;
+  /** Absent on the stand-in server, which has nothing to report. */
+  events?: ProxyEvents;
 }
 
 export type StartProxy = (opts: ProxyOptions) => Promise<ProxyHandle>;
@@ -122,6 +139,10 @@ export interface SyncResult {
   pulled: string[];
   conflicts: string[];
   errors: string[];
+  /** The build is behind what the account needs; nothing will sync until it is updated. */
+  needsGameUpdate?: boolean;
+  /** Everything the online service refused for good, with the file she can import by hand. */
+  unrecoverable?: Array<{ what: string; backupPath: string | null }>;
   /** One or two plain sentences from the engine, safe to show the user. */
   summary?: string;
 }
@@ -170,16 +191,13 @@ export interface SyncDeps {
 
 export type RunSync = (deps: SyncDeps) => Promise<SyncResult>;
 
-/** Substrings the engine puts into `SyncResult.errors`, prefixed with the target name. */
-export const NEEDS_GAME_UPDATE = "needs-game-update";
-export const UNKNOWN_REJECTION = "unknown-rejection";
-
 // ---------------------------------------------------------------------------
 // What wiring.ts hands back to index.ts
 // ---------------------------------------------------------------------------
 
 export interface RuntimeDeps {
-  makeMirror(dir: string): Mirror;
+  /** `secret` decides how the account token is protected on disk (src/main/secret.ts). */
+  makeMirror(dir: string, opts?: { secret?: SecretCodec; log?: Logger }): Mirror;
   /**
    * `forceOfflineCheck` is a dev-only switch (see index.ts); it is never passed in a packaged
    * build and a Connectivity that ignores it still behaves exactly as DESIGN.md §3.5 says.
