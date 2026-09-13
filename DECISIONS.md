@@ -27,3 +27,8 @@
 - Backup policy approved: Documents\PokeRogue Backups, keep all for 30 days, then one per month, conflict/update backups kept forever.
 - Same-origin API: game compiled with VITE_SERVER_URL=http://127.0.0.1:47830/api (client builds URLs as base + path, so a prefix works).
 - GitHub repo for source, game releases and installer: https://github.com/m0stey/pokerogue-offline (UPDATE_REPO = m0stey/pokerogue-offline).
+
+## 2026-09-13
+- Sync engine: on an `unknown-rejection` the engine should also export a fallback `.prsv` of the local save (cheap, and "fail safe" must include "nothing lost"). To be done in the QA phase; not yet implemented.
+- Session read-back verification compares only keys the server returned; dropped keys are warnings, critical keys (seed, waveIndex, timestamp, party, gameMode, playTime) are errors.
+- Finished-offline runs propagate via `session/delete` only under four preconditions (see DESIGN §3.8); `clear` is never sent.

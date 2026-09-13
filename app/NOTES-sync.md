@@ -1,9 +1,12 @@
 # NOTES — `src/sync/`
 
-Contract: `DESIGN.md` §3.1, §3.6–§3.9 and the invariants in §4. Runtime dependencies: Node built-ins
-only (`crypto`, `fs`, `https`, `path`). No `npm install` was run in `app/`.
+Contract: `DESIGN.md` §3.1, §3.6–§3.9 (including the §3.4/§3.8 amendment on offline-cleared slots)
+and the invariants in §4. Runtime dependencies: Node built-ins only (`crypto`, `fs`, `https`,
+`path`). No `npm install` was run in `app/`.
 
-Tests: `app/test/sync/` — `npx vitest run test/sync` (199 passing, 1 skipped unless `LIVE=1`).
+Tests: `app/test/sync/` — `npx vitest run test/sync` → **257 passing, 1 skipped** (the live contract
+test, which needs `LIVE=1`), across 9 files. Whole-repo `npx vitest run` → 341 passing, 1 skipped
+across 14 files; `npx tsc --noEmit -p app` is clean.
 
 ---
 
@@ -12,12 +15,12 @@ Tests: `app/test/sync/` — `npx vitest run test/sync` (199 passing, 1 skipped u
 | File | What it does |
 |---|---|
 | `prsv.ts` | `.prsv` crypto (CryptoJS-compatible), bypass-blob codec, the system-save key shortening/expansion |
-| `compare.ts` | structural equality with `null`/`[]`/absent normalisation, `KNOWN_LOSSY_SESSION_FIELDS`, `isDescendantSystem` / `isDescendantSession`, server-compatible `compareGameVersion` |
+| `compare.ts` | structural equality with `null`/`[]`/absent normalisation, `KNOWN_LOSSY_SESSION_FIELDS`, `CRITICAL_SESSION_FIELDS`, `verifySessionReadBack`, `isDescendantSystem` / `isDescendantSession`, server-compatible `compareGameVersion` |
 | `reconcile.ts` | pure three-way decision: `noop` / `push` / `pull` / `conflict` |
 | `errors.ts` | server prose + transport/HTML → a closed `ClassifiedError` union, plus plain-language wording |
 | `upstream-api.ts` | `UpstreamApi` interface and `HttpUpstreamApi` (node `https`) |
 | `mirror-port.ts` | the slice of `src/proxy/mirror.ts` the engine needs, declared locally so the two modules stay decoupled |
-| `backup.ts` | `.prsv` backup writing with verify-after-write, and retention/pruning |
+| `backup.ts` | `.prsv` backup writing with verify-after-write, identical-backup reuse, and retention/pruning |
 | `engine.ts` | `runSync` |
 
 ## 2. Usage
@@ -29,6 +32,9 @@ import { HttpUpstreamApi } from "./sync/upstream-api";
 
 const api = new HttpUpstreamApi({ token: account.token, log });
 const backup = createBackupManager({
+  // Either a full path the user picked in settings…
+  backupsDir: settings.backupsDir,
+  // …or just Documents, and it uses `<documents>/PokeRogue Backups/`.
   documentsDir: app.getPath("documents"),
   userDataDir: app.getPath("userData"),
   log,
@@ -49,16 +55,47 @@ await backup.prune();                         // cheap; call it after a sync or 
 ```
 
 `runSync` never throws for anything it anticipates — connectivity problems, rejections and
-verification failures all come back in `result.errors` (and `result.summary`).
+verification failures all come back in the result.
+
+### Reading a `SyncResult` without substring-matching
+
+```ts
+interface SyncResult {
+  pushed: string[];        // "system", "session2", …
+  pulled: string[];
+  conflicts: string[];
+  errors: string[];        // "<target>:<reason-kind>", for logs
+  warnings: string[];      // non-fatal, e.g. "session0:dropped-fields:playerFaints"
+  needsGameUpdate: boolean;                 // the build is behind the account; sync cannot succeed
+  unrecoverable: Array<{
+    what: string;                           // "system" | "sessionN"
+    reason: ClassifiedError;                // the typed reason, not a string to match
+    backupPath: string | null;              // the .prsv to offer the user; null ⇒ even that failed
+  }>;
+  summary: string;         // one or two plain sentences, safe to show verbatim
+}
+```
+
+- `needsGameUpdate` is the trigger for the "update the game" dialog. It is set for both
+  `needs-game-update` (the save online is newer than this build) and `version-too-low` (this build
+  is below the server's hard minimum) — both are fixed by updating.
+- `unrecoverable` is the trigger for DESIGN §3.10's "backup exported" notice. A backup is always
+  *attempted* before an entry is added, and `backupPath` says whether it worked. When it is `null`,
+  `errors` also carries `<what>:backup-failed`.
+- `warnings` never reach `summary`; they are for the log and the settings page.
 
 ### What the Mirror must guarantee
 
+Verified at compile time by `test/sync/mirror-port.contract.test.ts`, which does
+`const _p: MirrorPort = {} as Mirror` — if `Mirror` loses a method or changes a field type, `tsc`
+fails there instead of the app failing at runtime.
+
 `mirror-port.ts` documents one requirement that is not spelled out in DESIGN.md §3.3:
-**`dirty` must be derived from a structural comparison of `local` and `base` on every write**
-(use `structurallyEqual` from `src/sync/compare.ts`), not kept as a sticky boolean. The engine
-writes `writeLocalX` first and `setBaseX` second, and then expects `dirty === false`. The port also
-adds `readState()` / `writeState()` for `state.json`, which §3.3 lists as a file but not as methods
-— §4.4 requires the engine to read `clientSessionId` from there.
+**`dirty` must be derived from a structural comparison of `local` and `base` on every write**, not
+kept as a sticky boolean. The real `Mirror` does exactly this. The port also uses
+`readState()` / `writeState()` for `state.json`, which §3.3 lists as a file but not as methods, and
+the optional `setSessionSynced()` for settling a slot after an offline clear. All timestamps are
+ISO-8601 strings, matching the Mirror's on-disk format.
 
 ## 3. Verified facts this code is built on
 
@@ -76,17 +113,60 @@ adds `readState()` / `writeState()` for `state.json`, which §3.3 lists as a fil
   transform, and the client rewrites `"trainerId":N` / `"secretId":N` while doing it. `prsv.ts`
   reproduces that literally, including the replacement order that makes `$sa` expand before `$s`
   and the legacy `$pAttr → $pa` fixup on the import side.
-- **Session round trips are lossy.** `playerFaints` is not in the server's Go struct and is dropped;
-  `dailyConfig` and `name` are `omitempty`; every empty array comes back as `null`
-  (reports/live-api.md §3.17).
+- **Session round trips are lossy.** The server decodes into `defs.SessionSaveData` and discards
+  every key that struct does not have. `playerFaints` is the one we know about; `dailyConfig` and
+  `name` are `omitempty`; every empty array comes back as `null` (reports/live-api.md §3.17).
 - **System round trips add `starterMoveData: null` and `starterEggMoveData: null`** and re-sort
   `gameStats` alphabetically (reports/live-api.md §3.13).
 - **`Origin: https://pokerogue.net` is mandatory**; without it Cloudflare returns an HTML 403 even
   for a valid token. The token is the raw base64 string in `Authorization`, no `Bearer`.
-- **Success statuses differ**: `system/update` → 204, `session/update` → 200, both with empty
-  bodies. `upstream-api.ts` branches on status only.
+- **Success statuses differ**: `system/update` → 204, `session/update` → 200, `session/delete` → 200,
+  all with empty bodies. `upstream-api.ts` branches on status only.
 
-## 4. Deviations from DESIGN.md, and why
+## 4. The two amendments, as implemented
+
+### 4a. Propagating a run finished offline (`session/delete`)
+
+`UpstreamApi.deleteSession(slot, clientSessionId)` issues `GET /savedata/session/delete?slot=N&…`
+(it really is a GET — `session-savedata-api.ts:80` uses `doGet`). `runSync` calls it **only** when
+`mayPropagateClear(record, remote)` returns true, which requires **all four**:
+
+1. `record.local === null` — the game removed the run here;
+2. `record.clearedAt` is a non-empty string — it was an offline *clear*, not some other way of
+   ending up empty;
+3. `record.base !== null` — we know what the server had;
+4. `remote` is non-null and structurally equals `base` — nobody has touched the slot online since.
+
+Then, in order: a **verified `.prsv` of the server's copy** (if it cannot be written, the delete
+does not happen at all), the delete, a read-back proving the slot is now empty, and only then
+`setSessionSynced(slot, null)`. Any other null-`local` case falls through to a normal reconcile.
+`mayPropagateClear` is exported and unit-tested; there is a test for the allowed case and one for
+each of the six ways a precondition can fail, each asserting `deleteSession` was never called.
+
+The pre-delete backup uses `reason: "update"`, which §3.7 lists as never pruned — a finished run is
+exactly the thing you do not want deleted from the backups folder 31 days later.
+
+### 4b. Session read-back verification
+
+`verifySessionReadBack(sent, got)` compares **only the top-level keys the server's response actually
+contains** (after `null`/`[]`/absent normalisation), because the set of keys it drops cannot be
+enumerated ahead of a client release. It returns:
+
+- `difference` — the path of the first mismatch among the keys the server kept ⇒ **error**;
+- `criticalProblem` — a field in `CRITICAL_SESSION_FIELDS` (`seed`, `waveIndex`, `timestamp`,
+  `party`, `gameMode`, and `playTime` when we sent one) that is missing or differs ⇒ **error**;
+- `droppedKeys` — everything else we sent that did not come back ⇒ **warning**, surfaced as
+  `sessionN:dropped-fields:a,b` in `result.warnings`.
+
+A key whose value we sent as `null`/`[]` and that simply did not come back is not "dropped" — those
+mean the same thing. `KNOWN_LOSSY_SESSION_FIELDS` is kept purely as documentation of what we already
+know the server discards, and a test asserts none of it overlaps `CRITICAL_SESSION_FIELDS` (if it
+did, a push could never verify).
+
+This closes the "verify-failed forever" trap noted in the previous revision of this file: a future
+client field now produces one warning per push instead of a permanently dirty slot.
+
+## 5. Deviations from DESIGN.md, and why
 
 1. **"Structural equality after normalising `null` ↔ `[]`" also covers an absent key.**
    DESIGN §3.6 names only `null` ↔ `[]`. Taken literally, the §3.8(6) "system: strict" read-back
@@ -96,16 +176,12 @@ adds `readState()` / `writeState()` for `state.json`, which §3.3 lists as a fil
    and a non-empty array are all still distinct from `null`.
 
 2. **`isDescendant*` applies more guards than §3.6 lists.** DESIGN requires `playTime >=`,
-   `timestamp >=`, and for sessions same `seed` with `waveIndex >=`. Added, each one mirroring a
-   rule the server enforces or a way progress could vanish silently:
-   - identical `trainerId`/`secretId` (a different pair is a different profile; the server rejects
-     it with `stored trainer or secret ID does not match`);
-   - no `gameVersion` regression (`existing version is greater`);
-   - no regression of any monotone `gameStats` counter (`MONOTONE_GAME_STATS`);
-   - `appliedMigrators` containment with identical values (`migrators desynced`);
-   - sessions additionally require `playTime >=` when both saves carry one.
-   Extra guards can only turn a silent fast-forward into a question for the user. They never lose
-   data, and they never *cause* an overwrite.
+   `timestamp >=`, and for sessions same `seed` with `waveIndex >=`. Added, each mirroring a rule
+   the server enforces or a way progress could vanish silently: identical `trainerId`/`secretId`;
+   no `gameVersion` regression; no regression of any monotone `gameStats` counter
+   (`MONOTONE_GAME_STATS`); `appliedMigrators` containment with identical values; and for sessions
+   `playTime >=` when both carry one. Extra guards can only turn a silent fast-forward into a
+   question for the user — they never lose data and never *cause* an overwrite.
 
 3. **`SlotDecision` has a sibling with a reason.** `reconcile*Explained()` returns the decision plus
    a `reason` (`fast-forward-local`, `diverged`, …) for logs and tests. `reconcileSystem` /
@@ -115,36 +191,43 @@ adds `readState()` / `writeState()` for `state.json`, which §3.3 lists as a fil
    (`local == base && remote != base ⇒ pull`) would, when the server has no system save at all,
    delete the only copy of the profile. The server never legitimately loses a system save (a 404
    there means a wiped or brand-new account), and pushing into an empty account always succeeds —
-   the server skips playtime/version/migrator validation when no save exists and adopts the
-   incoming `trainerId`/`secretId`. Logged as a warning when it happens.
-   A `pull` of a null *session* is honoured (the run was finished or the slot was cleared online),
-   but only after a verified `.prsv` of the local copy exists.
+   it skips playtime/version/migrator validation and adopts the incoming `trainerId`/`secretId`.
+   Logged as a warning when it happens. A `pull` of a null *session* is honoured (the run was
+   finished or the slot was cleared online), but only after a verified `.prsv` of the local copy.
 
 5. **404 is not an error at the API layer.** `getSystem`/`getSession` return
    `{ ok: true, status: 404, data: null }` for the body `save does not exist`, because "there is no
    save online" is a state the reconciler reasons about, not a failure. Any *other* 404 body is a
    normal `ok: false`.
 
-6. **`UpstreamApi` gained `login`.** Required by deliverable 9 (the live contract test) and useful
-   for a headless re-authentication. It is not used by `runSync`.
+6. **`UpstreamApi` gained `login`.** Required by the live contract test and useful for a headless
+   re-authentication. It is not used by `runSync`.
 
-7. **Conflict backups use `reason: "conflict"`, plain fast-forwards use `"update"`.** Both are on
-   the never-pruned list in §3.7, so this only affects the filename. An unrecoverable push rejection
-   also writes a `"conflict"` backup of the *local* save — that is the file DESIGN §3.10's
-   "backup exported" notice points at.
+7. **After a verified push, `base` is set to the save we sent, not to the server's echo.** The echo
+   carries the server's own normalisation (added `null`s, re-sorted keys, dropped fields); storing
+   it would leave the mirror permanently `dirty` under the Mirror's byte-level canonical comparison,
+   and every sync would push again forever. We have just *proved* the two are equivalent, so the
+   local save is the honest thing to record.
 
-8. **No backup is written when the side being replaced is `null`.** There is nothing to lose. This
-   keeps first-ever pushes and pulls-into-an-empty-slot from creating empty-ish noise files.
+8. **`SyncResult` gained `warnings`, `needsGameUpdate` and `unrecoverable`** (requested by the shell
+   agent) so `src/main` never has to substring-match `errors`.
 
-## 5. Known limits
+9. **`createBackupManager` accepts `backupsDir`** (a full path) as well as `documentsDir`, so the
+   settings page can move the folder. `documentsDir` alone still gives the DESIGN §3.7 location.
+   `resolveBackupsDir()` is exported so settings can display the same string.
 
-- **The session read-back check can fail on a future client release.** §3.8(6) says to ignore the
-  fields in `KNOWN_LOSSY_SESSION_FIELDS`, but the server drops *any* field its Go struct does not
-  know, and that list cannot be enumerated ahead of time. If upstream adds a field before the server
-  does, every session push will report `sessionN:verify-failed`, keep the slot dirty and retry
-  forever. It fails safe (nothing is lost, nothing is deleted) but it is noisy. Re-check
-  `upstream/rogueserver/defs/savedata.go` against `src/@types/save-data.ts` on every upstream bump
-  and extend the list.
+10. **`backup()` reuses an identical backup from the same day** (same content, kind, slot and
+    reason) instead of writing a new file. Without this, a save the server keeps refusing produced a
+    fresh never-pruned `conflict` file on every sync — 144 identical files a day at the 10-minute
+    sync interval. The reused file has already passed verify-after-write.
+
+11. **Conflict backups use `reason: "conflict"`, plain fast-forwards and offline-clear propagation
+    use `"update"`.** Both are on §3.7's never-pruned list, so this only affects the filename.
+
+12. **No backup is written when the side being replaced is `null`.** There is nothing to lose.
+
+## 6. Known limits
+
 - **A system save whose *string value* is literally `"$sa"` (or any other short key) cannot be
   backed up.** The client's shortening is a raw substitution, so expansion would turn the value into
   `"seenAttr"`. `backup.ts` detects the mismatch in verify-after-write and throws
@@ -158,25 +241,27 @@ adds `readState()` / `writeState()` for `state.json`, which §3.3 lists as a fil
   sync). Keeping it out of the sync path means a slow disk scan can never delay a save.
 - **Backups are never encrypted with a per-user key.** `PRSV_KEY` is public and in the shipped game
   bundle; the `.prsv` files are exactly as protected as the game's own exports, no more.
+- **A dropped *critical* field is an error, so a server-side schema change that stops storing, say,
+  `party` would make every session push fail.** That is deliberate — it fails safe, loudly — but it
+  means `CRITICAL_SESSION_FIELDS` should be re-checked against
+  `upstream/rogueserver/defs/savedata.go` on every server bump.
 
-## 6. Open questions for the orchestrator
+## 7. Open questions for the orchestrator
 
-1. **`Mirror` API surface.** `mirror-port.ts` assumes `readState()` / `writeState(patch)` and the
-   derived-`dirty` rule. If `src/proxy/mirror.ts` lands with a different shape, the port is the one
-   file to change — the engine imports nothing from `src/proxy`.
-2. **Who generates `clientSessionId`?** The engine reads it from `state.json` and refuses to run
-   when it is missing. Someone in `src/main` has to create it once per install (32 url-safe chars,
-   matching the game's own generator).
-3. **Conflict dialog wording and the shape of `ConflictQuestion`.** It currently carries
-   `playTime`, `timestamp`, `waveIndex` and `seed` for each side. If the dialog wants "last played"
-   as a date or a party preview, say so and the shape can grow.
-4. **Should a conflict's *losing* side also be pushed to a spare session slot** rather than only
-   living as a `.prsv`? Out of scope for §3.8, but it is the one thing that would make a wrong
-   answer in the dialog fully reversible from inside the game.
-5. **`updateall` is deliberately unused.** §3.8's explicit sequence is implemented instead, per
+1. **Should `unknown-rejection` also export a fallback `.prsv`?** Today only the rejections in
+   `UNRECOVERABLE_PUSH_KINDS` do; an unknown rejection keeps the save dirty and retries, per §3.9's
+   "fail safe: do nothing". If an unknown rejection ever turns out to be permanent, the user has no
+   exported copy until someone classifies it. Cheap to change (one line in `handlePushRejection`).
+2. **Conflict dialog wording and the shape of `ConflictQuestion`.** It carries `playTime`,
+   `timestamp`, `waveIndex` and `seed` per side. If the dialog wants "last played" as a date or a
+   party preview, the shape can grow.
+3. **`updateall` is deliberately unused.** §3.8's explicit sequence is implemented instead, per
    reports/live-api.md §9 (it is not transactional and writes the session before the system).
+4. Answered by the coordinator and recorded here for the next reader: the Mirror is the real one at
+   `src/proxy/mirror.ts`; `main` calls `ensureClientSessionId()` at startup; there is no spare-slot
+   copy of a conflict's losing side — the `.prsv` backup is the sanctioned path.
 
-## 7. Live contract test
+## 8. Live contract test
 
 `test/sync/live.test.ts`, skipped unless `LIVE=1`:
 
@@ -191,4 +276,6 @@ It uses only `scratch/api-probe/throwaway-account.json` (it asserts the username
 
 **Result of the run on 2026-09-12:** passed, 6.3 s. Login returned a 44-character base64 token,
 `system/get` returned the stored save, `system/update` returned **204**, and the second `system/get`
-returned `playTime + 1` with the rest of the save structurally identical to what was sent.
+returned `playTime + 1` with the rest of the save structurally identical to what was sent. It has
+not been re-run since (the code paths it covers have not changed; `deleteSession` is deliberately
+**not** exercised live — it is irreversible).

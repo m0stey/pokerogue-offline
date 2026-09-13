@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  CRITICAL_SESSION_FIELDS,
   KNOWN_LOSSY_SESSION_FIELDS,
   compareGameVersion,
   firstDifference,
@@ -11,9 +12,17 @@ import {
   sessionEqualsStrict,
   structurallyEqual,
   systemEquals,
+  verifySessionReadBack,
 } from "../../src/sync/compare";
 import type { SessionSave, SystemSave } from "../../src/sync/types";
-import { advanceSession, advanceSystem, makeSession, makeSystem, serverEcho } from "./fakes";
+import {
+  SERVER_SESSION_KEYS,
+  advanceSession,
+  advanceSystem,
+  makeSession,
+  makeSystem,
+  serverEcho,
+} from "./fakes";
 
 const FIXTURES = join(__dirname, "fixtures");
 const read = (name: string) => JSON.parse(readFileSync(join(FIXTURES, name), "utf8"));
@@ -198,5 +207,94 @@ describe("isDescendantSession", () => {
   it("ignores the fields the server drops when checking equality", () => {
     const withFaints = makeSession({ playerFaints: 3 });
     expect(isDescendantSession(withFaints, base)).toBe(false); // equal apart from a lossy field
+  });
+});
+
+describe("verifySessionReadBack — only the keys the server returned are compared", () => {
+  const sent = makeSession({ playerFaints: 3 });
+
+  it("accepts the real server's lossy echo of a save we just pushed", () => {
+    const got = serverEcho(sent, SERVER_SESSION_KEYS);
+    const v = verifySessionReadBack(sent, got);
+    expect(v.ok).toBe(true);
+    expect(v.difference).toBeNull();
+    expect(v.criticalProblem).toBeNull();
+    expect(v.droppedKeys).toEqual(["playerFaints"]);
+  });
+
+  it("reports an unknown future field as a dropped key, not a failure", () => {
+    const withCanary = makeSession({ someUnknownFutureField: "canary" } as never);
+    const got = serverEcho(withCanary, SERVER_SESSION_KEYS);
+    const v = verifySessionReadBack(withCanary, got);
+    expect(v.ok).toBe(true);
+    expect(v.droppedKeys).toContain("someUnknownFutureField");
+  });
+
+  it("matches the real fixture pair from the live probe", () => {
+    const probeSent = read("session-sent.json") as SessionSave;
+    const probeGot = read("session-roundtrip.json") as SessionSave;
+    const v = verifySessionReadBack(probeSent, probeGot);
+    expect(v.ok).toBe(true);
+    expect(v.droppedKeys.sort()).toEqual(["playerFaints", "someUnknownFutureField"]);
+  });
+
+  it("does not count an empty array we sent as dropped when the key is simply absent", () => {
+    const s = makeSession({ challenges: [] });
+    const got = serverEcho(s, SERVER_SESSION_KEYS) as Record<string, unknown>;
+    delete got["challenges"];
+    const v = verifySessionReadBack(s, got as SessionSave);
+    expect(v.droppedKeys).not.toContain("challenges");
+    expect(v.ok).toBe(true);
+  });
+
+  it("fails when a key the server kept has a different value", () => {
+    const got = { ...serverEcho(sent, SERVER_SESSION_KEYS), money: 99999 } as SessionSave;
+    const v = verifySessionReadBack(sent, got);
+    expect(v.ok).toBe(false);
+    expect(v.difference).toBe("money");
+  });
+
+  it("reports a nested difference with its path", () => {
+    const got = JSON.parse(JSON.stringify(serverEcho(sent, SERVER_SESSION_KEYS))) as Record<string, unknown>;
+    (got["arena"] as Record<string, unknown>)["biome"] = 12;
+    const v = verifySessionReadBack(sent, got as SessionSave);
+    expect(v.ok).toBe(false);
+    expect(v.difference).toBe("arena.biome");
+  });
+
+  describe("critical fields are never merely warnings", () => {
+    for (const field of CRITICAL_SESSION_FIELDS) {
+      it(`a missing ${field} fails`, () => {
+        const got = serverEcho(sent, SERVER_SESSION_KEYS) as Record<string, unknown>;
+        expect(got[field], `the fixture must actually carry ${field}`).toBeDefined();
+        delete got[field];
+        const v = verifySessionReadBack(sent, got as SessionSave);
+        expect(v.ok).toBe(false);
+        expect(v.criticalProblem).toContain(field);
+        expect(v.droppedKeys).toContain(field);
+      });
+
+      it(`a differing ${field} fails`, () => {
+        const got = serverEcho(sent, SERVER_SESSION_KEYS) as Record<string, unknown>;
+        got[field] = typeof got[field] === "number" ? (got[field] as number) + 1 : "changed";
+        const v = verifySessionReadBack(sent, got as SessionSave);
+        expect(v.ok).toBe(false);
+        expect(v.criticalProblem).toContain(field);
+      });
+    }
+  });
+
+  it("fails when the slot came back empty", () => {
+    const v = verifySessionReadBack(sent, null);
+    expect(v.ok).toBe(false);
+    expect(v.criticalProblem).toMatch(/no save/i);
+  });
+
+  it("KNOWN_LOSSY_SESSION_FIELDS stays as documentation of what we already know is dropped", () => {
+    expect(KNOWN_LOSSY_SESSION_FIELDS).toContain("playerFaints");
+    // and none of them is critical, or a push could never verify
+    for (const f of KNOWN_LOSSY_SESSION_FIELDS) {
+      expect(CRITICAL_SESSION_FIELDS).not.toContain(f);
+    }
   });
 });

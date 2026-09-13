@@ -128,6 +128,41 @@ export function createBackupManager(opts: BackupManagerOptions): BackupManager {
     return candidate;
   }
 
+  /**
+   * A save that keeps being refused is backed up again on every sync. Since `conflict` and `update`
+   * backups are never pruned, that would fill the folder with identical files — one every ten
+   * minutes for as long as the rejection lasts. So: if an already-verified backup of exactly this
+   * content, kind, slot and reason is sitting in today's folder, reuse it.
+   */
+  async function findIdenticalToday(
+    dir: string,
+    suffix: string,
+    kind: BackupKind,
+    save: object,
+  ): Promise<string | null> {
+    let names: string[];
+    try {
+      names = await readdir(dir);
+    } catch {
+      return null;
+    }
+    for (const name of names.sort().reverse()) {
+      if (!name.endsWith(".prsv") || !name.includes(suffix)) {
+        continue;
+      }
+      const candidate = join(dir, name);
+      try {
+        const parsed = parseExportedPlaintext(kind, decryptPrsv(await readFile(candidate, "utf8")));
+        if (structurallyEqual(parsed, save)) {
+          return candidate;
+        }
+      } catch {
+        continue; // unreadable or not ours: leave it alone
+      }
+    }
+    return null;
+  }
+
   async function backup(
     kind: BackupKind,
     slot: number | null,
@@ -139,7 +174,14 @@ export function createBackupManager(opts: BackupManagerOptions): BackupManager {
     }
     const at = now();
     const day = dayStamp(at);
-    const base = `${timeStamp(at)}-${sanitiseReason(reason)}-${kindLabel(kind, slot)}`;
+    const suffix = `-${sanitiseReason(reason)}-${kindLabel(kind, slot)}`;
+    const base = `${timeStamp(at)}${suffix}`;
+
+    const existing = await findIdenticalToday(join(documentsRoot, day), suffix, kind, save);
+    if (existing !== null) {
+      log.debug("an identical backup already exists today; reusing it", { path: existing });
+      return existing;
+    }
 
     const plaintext = plaintextForExport(kind, save);
     const blob = encryptPrsv(plaintext);
