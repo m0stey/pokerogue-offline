@@ -1,0 +1,89 @@
+{
+  "before": {
+    "playTime": 593,
+    "wave": 4,
+    "seed": "AHnTxiM4147tgUEzbADQ0vKV"
+  },
+  "target": {
+    "playTime": 893,
+    "wave": 6,
+    "seed": "AHnTxiM4147tgUEzbADQ0vKV"
+  },
+  "after": {
+    "playTime": 893,
+    "wave": 6,
+    "seed": "AHnTxiM4147tgUEzbADQ0vKV"
+  },
+  "results": [
+    {
+      "name": "app serves the API online",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "login through the app",
+      "ok": true,
+      "detail": "status 200"
+    },
+    {
+      "name": "system save loaded online",
+      "ok": true,
+      "detail": "status 200"
+    },
+    {
+      "name": "run in slot 0 loaded online",
+      "ok": true,
+      "detail": "status 200"
+    },
+    {
+      "name": "install clientSessionId created",
+      "ok": true,
+      "detail": "kEJQNSNF"
+    },
+    {
+      "name": "app switched to offline",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "offline run save accepted",
+      "ok": true,
+      "detail": "status 200 "
+    },
+    {
+      "name": "offline system save accepted",
+      "ok": true,
+      "detail": "status 204 "
+    },
+    {
+      "name": "offline reload shows offline progress",
+      "ok": true,
+      "detail": "playTime 893 wave 6"
+    },
+    {
+      "name": "mirror marks both as not yet online",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "app saved online by itself after reconnect",
+      "ok": true,
+      "detail": "12.1 s after the switch was removed"
+    },
+    {
+      "name": "server has the offline play time",
+      "ok": true,
+      "detail": "593 -> 893"
+    },
+    {
+      "name": "server has the offline wave",
+      "ok": true,
+      "detail": "4 -> 6"
+    },
+    {
+      "name": "backup files written during the sync",
+      "ok": true,
+      "detail": "152232-update-system.prsv, 152234-update-session0.prsv"
+    }
+  ]
+}

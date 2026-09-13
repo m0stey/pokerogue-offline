@@ -10,7 +10,7 @@ clean for the whole project) and `npm run build` succeeds, including `wiring.ts`
 |---|---|
 | `src/main/index.ts` | App entry: single-instance lock, `userData` → `%APPDATA%\PokeRogue Offline`, logger, game-file lookup, proxy on 47830, connectivity, window, tray, sync schedule, quit handling, wake/online re-probe, the one "new version" notice |
 | `src/main/contracts.ts` | The only description of `src/proxy` / `src/sync` that the rest of `src/main` sees. Checked against the real modules. |
-| `src/main/wiring.ts` | The only file importing `../proxy/*` and `../sync/*`. Bundled separately; if it fails to build, the app still starts in stand-in mode. |
+| `src/main/wiring.ts` | The only file importing `../proxy/*` and `../sync/*`. Bundled separately and **required**: without `dist/main/wiring.js` the app shows the start-up error and exits. |
 | `src/main/logger.ts` | File `Logger` (`src/common/log.ts`): `<userData>/logs/app-<yyyy-mm-dd>.log`, rotate at 5 MB, keep 10, tokens redacted |
 | `src/main/game-files.ts` | `<userData>/game/current` → `<resourcesPath>/game` → dev folder; reads `version.json` (`tag` **and** `gameVersion`). No swap repair any more — nothing installs anything. |
 | `src/main/window.ts` | The game window: no menu, remembered bounds (`window.json`), F11/Escape fullscreen, `contextIsolation`+`sandbox`, no preload, all navigation blocked except `pokerogue.net` links → default browser, all permissions denied |
@@ -23,7 +23,6 @@ clean for the whole project) and `npm run build` succeeds, including `wiring.ts`
 | `src/main/strings.de.ts` | **Every user-visible string**, in one place, plus `OWNER_NAME` and `APP_NAME` |
 | `src/main/secret.ts` | The only file that touches Electron `safeStorage`; builds the `SecretCodec` the Mirror encrypts the token with |
 | `src/main/dev-hooks.ts` | The two development-only switches (force-offline file, F12 devtools), pure so a test can prove they are dead when packaged |
-| `src/main/fallback-server.ts` | Stand-in static server **and** stand-in `Connectivity`, used only if `wiring.js` is missing |
 | `src/ui/conflict.html` + `.js` | The one save question |
 | `src/ui/settings.html` + `.js` | The whole settings page |
 | `src/ui/splash.html` + `splash.js` | The "saving online" splash; its one sentence arrives in the query string so no German lives in the HTML |
@@ -51,8 +50,8 @@ the casts as the contracts converge:
 4. `new HttpUpstreamApi({ token, log })` — the token comes from `mirror.readAccount()?.token`, which
    the proxy writes on a successful login. A sync run is skipped entirely when there is no account
    record yet.
-5. Once the real modules are considered stable, `fallback-server.ts` can be deleted together with
-   the `loadRuntime()` fallback branch in `index.ts` (three call sites, all marked "stand-in").
+5. Done (2026-09-13, release pass): `fallback-server.ts` and the `loadRuntime()` stand-in branch are
+   deleted. A missing or broken `wiring.js` is now a start-up error, not a degraded mode.
 
 ## Every user-visible string, in one list
 
@@ -107,9 +106,6 @@ Startup errors (`PokéRogue konnte nicht gestartet werden.` + one detail + `Schl
 - `Ein anderes Programm auf diesem Computer benutzt gerade etwas, das PokéRogue braucht. Bitte starte den Computer neu und öffne PokéRogue noch einmal.`
 - `Beim Starten ist etwas schiefgegangen. Bitte starte den Computer neu und versuche es noch einmal.`
 - `Die Spieldateien fehlen. Bitte installiere PokéRogue noch einmal – dein gespeicherter Fortschritt bleibt dabei erhalten.`
-
-Stand-in page (only in development, when there are no game files):
-- `Das Spiel wird auf diesem Computer noch eingerichtet. Bitte schließe dieses Fenster und öffne PokéRogue gleich noch einmal.`
 
 Formatted values (`format.ts`): `132 Std. 12 Min.`, `45 Min.`, `weniger als eine Minute`, `—` ·
 `gerade eben`, `vor einer Minute`, `vor 12 Minuten`, `vor einer Stunde`, `vor 5 Stunden`, `gestern`,

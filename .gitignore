@@ -9,3 +9,4 @@ game-build/work/
 .DS_Store
 Thumbs.db
 app/release/
+release/
