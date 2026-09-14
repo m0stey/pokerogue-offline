@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { Logger } from "../common/log";
 import { GAME_ORIGIN } from "./contracts";
 import { devToolsAllowed } from "./dev-hooks";
+import { windowKeyAction } from "./keys";
 import { DE } from "./strings.de";
 import { readJsonSafe, writeJsonAtomic } from "./settings";
 
@@ -125,18 +126,36 @@ export function createGameWindow(opts: GameWindowOptions): BrowserWindow {
     saveState();
   });
 
-  // --- F11 toggles fullscreen (and Escape leaves it) -------------------------
+  // --- the keys the window answers itself (keys.ts) --------------------------
+  // F11/Escape fullscreen, F5 and Ctrl+R reload, F12 developer tools in a development build.
   win.webContents.on("before-input-event", (event, input) => {
-    if (input.type !== "keyDown") return;
-    if (input.key === "F11") {
-      event.preventDefault();
-      win.setFullScreen(!win.isFullScreen());
-    } else if (input.key === "Escape" && win.isFullScreen()) {
-      event.preventDefault();
-      win.setFullScreen(false);
-    } else if (input.key === "F12" && devToolsAllowed(app.isPackaged)) {
-      event.preventDefault();
-      win.webContents.toggleDevTools();
+    const action = windowKeyAction(input, {
+      fullScreen: win.isFullScreen(),
+      devTools: devToolsAllowed(app.isPackaged),
+    });
+    if (!action) return;
+    event.preventDefault();
+    switch (action) {
+      case "fullscreen-on":
+        win.setFullScreen(true);
+        break;
+      case "fullscreen-off":
+        win.setFullScreen(false);
+        break;
+      case "devtools":
+        win.webContents.toggleDevTools();
+        break;
+      case "reload":
+        // While the page is still coming up there is nothing to reload yet, and a second press
+        // would only start the loading over; the game takes a moment to appear and the user
+        // pressing again is the likeliest thing in the world.
+        if (win.webContents.isLoading()) {
+          opts.log.debug("reload key while the game was still loading: ignored");
+          break;
+        }
+        opts.log.info("the user reloaded the game");
+        win.webContents.reload();
+        break;
     }
   });
 

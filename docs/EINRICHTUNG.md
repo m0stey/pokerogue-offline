@@ -42,6 +42,7 @@ wissen.
 ## Gut zu wissen
 
 - **Updates** kommen von selbst: Beim Start prüft die App die Version, lädt Neues herunter und installiert beim Neustart. Das sind rund 600 MB. Läuft das über einen Handy-Hotspot, einfach PokéRogue schließen, dann lädt es beim nächsten Start im WLAN.
+- **F5 lädt das Spiel neu**, genau wie im Browser (**Strg+R** geht auch). Das Spiel kommt an der Welle zurück, die es zuletzt gespeichert hat – alles seit dem Anfang der Welle ist dann weg, genau wie im Browser. Der Spielstand im Konto nimmt dabei keinen Schaden. **F11** schaltet das Vollbild ein und aus.
 - **Im Browser spielen** geht weiter, sollte aber die Ausnahme sein. Wurde auf beiden Seiten gespielt, ohne dass die App online war, kommt die Frage nach dem Spielstand.
 - **Sicherungskopien** liegen in `Dokumente\PokeRogue Backups`. Jede Datei lässt sich im Spiel über **Menü → Daten verwalten → Daten importieren** zurückholen.
 

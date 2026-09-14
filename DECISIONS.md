@@ -110,3 +110,9 @@ Verified: 438 tests, offline round trip against the real server rerun with a rel
 
 ## 2026-09-13 — hover text
 - Desktop shortcut description, exe file description/product name and tray tooltip are "FranziRogue" (owner request). The window and in-app name stay PokéRogue. App version 0.1.1 so installed apps update.
+
+## 2026-09-14 — F5 reloads the game
+- The user reloads the page mid-run when a fight goes wrong, the way she does on `pokerogue.net`. The wrapper had no menu, so no reload key at all. Now **F5 and Ctrl+R** (with or without Shift) reload the window, and `src/main/keys.ts` holds the whole list of keys the window takes for itself so it stays short and testable.
+- Deliberately a plain reload: nothing of ours saves, flushes or syncs first. She reloads to be rid of what just happened; the game comes back at the start of the wave it last saved, the same loss as in the browser. The game's own copy in browser storage and the copy this computer holds are both that same last save, so they agree after the reload.
+- Ignored while the page is still loading, so pressing again during the loading screen does not start the load over.
+- No confirmation question, no tray entry: browser parity was the request, and a menu item that throws away the current wave is a bad thing to be able to click by accident.

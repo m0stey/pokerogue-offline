@@ -13,7 +13,8 @@ clean for the whole project) and `npm run build` succeeds, including `wiring.ts`
 | `src/main/wiring.ts` | The only file importing `../proxy/*` and `../sync/*`. Bundled separately and **required**: without `dist/main/wiring.js` the app shows the start-up error and exits. |
 | `src/main/logger.ts` | File `Logger` (`src/common/log.ts`): `<userData>/logs/app-<yyyy-mm-dd>.log`, rotate at 5 MB, keep 10, tokens redacted |
 | `src/main/game-files.ts` | `<userData>/game/current` → `<resourcesPath>/game` → dev folder; reads `version.json` (`tag` **and** `gameVersion`). No swap repair any more — nothing installs anything. |
-| `src/main/window.ts` | The game window: no menu, remembered bounds (`window.json`), F11/Escape fullscreen, `contextIsolation`+`sandbox`, no preload, all navigation blocked except `pokerogue.net` links → default browser, all permissions denied |
+| `src/main/window.ts` | The game window: no menu, remembered bounds (`window.json`), the keys from `keys.ts`, `contextIsolation`+`sandbox`, no preload, all navigation blocked except `pokerogue.net` links → default browser, all permissions denied |
+| `src/main/keys.ts` | Which keys the window answers itself (F11/Escape fullscreen, F5 and Ctrl+R reload, F12 devtools), pure so the short list is pinned down by a test |
 | `src/main/tray.ts` | Tray icon and its three-item menu. The game page itself is never touched. |
 | `src/main/settings.ts` | `<userData>/settings.json` with defaults, validation, atomic writes; also the shared `writeJsonAtomic` / `readJsonSafe` |
 | `src/main/dialogs.ts` | Conflict window, settings window, "progress is safe" notice, "there is a new version" notice, startup error, saving splash; owns the IPC for our pages |

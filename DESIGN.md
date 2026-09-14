@@ -136,6 +136,7 @@ Map server error substrings to typed reasons: `not active`, `existing playtime i
 
 ### 3.10 `src/main/`
 - Single `BrowserWindow`, loads `GAME_ORIGIN`, no menu, fullscreen-capable, remembers size.
+- **Window keys** (`src/main/keys.ts`, one pure function, tested): F11 and Escape fullscreen; **F5 and Ctrl+R reload the game**, the browser habit the user already has — plain `webContents.reload()`, no save of any kind on the way out (the point of the reload is to drop what just happened), so the game comes back at the wave it last saved, exactly as `pokerogue.net` does. Ignored while the page is still loading. F12 opens the developer tools in a development build only. Every other key is the game's.
 - On start: ensure game files present (`<userData>/game/current` -> `<resourcesPath>/game` -> the dev folder), start proxy, probe connectivity, open window; run sync 3 s after online is detected and every 10 min while online, and on window close (await, max 30 s, with a small "saving online" splash if > 2 s).
 - Login: the game's own login screen (first run only; offline replay keeps the user logged in).
 - **Every user-visible string is German**, informal "du", no technical terms, and they all live in `src/main/strings.de.ts` (DECISIONS 2026-09-13). The installer is German too (`electron-builder.yml`: `installerLanguages: de_DE`, `language: 1031`).
